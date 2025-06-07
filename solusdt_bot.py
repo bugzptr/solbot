@@ -446,15 +446,15 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     def _get_r(k,d): r=opt_ranges.get(k); return r if r and len(r)==3 else d
     
     ind_p = trial_params["indicators"]
-    ind_p["tema_period"]=trial.suggest_int("tema_period",*_get_r("tema_period",[15,40,1]))
-    ind_p["cci_period"]=trial.suggest_int("cci_period",*_get_r("cci_period",[10,30,1]))
-    ind_p["kijun_sen_period"]=trial.suggest_int("kijun_sen_period",*_get_r("kijun_sen_period",[20,52,2]))
-    ind_p["cmf_window"]=trial.suggest_int("cmf_window",*_get_r("cmf_window",[14,30,1]))
-    ind_p["williams_r_threshold"]=trial.suggest_int("williams_r_threshold",*_get_r("williams_r_threshold",[-70,-30,5]))
-    
-    trial_params["stop_loss_atr_multiplier"]=trial.suggest_float("sl_atr_mult",*_get_r("stop_loss_atr_multiplier",[1.5,3.5,0.1]))
-    trial_params["take_profit_atr_multiplier"]=trial.suggest_float("tp_atr_mult",*_get_r("take_profit_atr_mult",[1.5,5.0,0.1]))
-    trial_params["risk_per_trade"]=trial.suggest_float("risk_per_trade",*_get_r("risk_per_trade",[0.005,0.025,0.001]))
+    ind_p["tema_period"] = trial.suggest_int("tema_period", _get_r("tema_period", [15, 40, 1])[0], _get_r("tema_period", [15, 40, 1])[1], step=_get_r("tema_period", [15, 40, 1])[2])
+    ind_p["cci_period"] = trial.suggest_int("cci_period", _get_r("cci_period", [10, 30, 1])[0], _get_r("cci_period", [10, 30, 1])[1], step=_get_r("cci_period", [10, 30, 1])[2])
+    ind_p["kijun_sen_period"] = trial.suggest_int("kijun_sen_period", _get_r("kijun_sen_period", [20, 52, 2])[0], _get_r("kijun_sen_period", [20, 52, 2])[1], step=_get_r("kijun_sen_period", [20, 52, 2])[2])
+    ind_p["cmf_window"] = trial.suggest_int("cmf_window", _get_r("cmf_window", [14, 30, 1])[0], _get_r("cmf_window", [14, 30, 1])[1], step=_get_r("cmf_window", [14, 30, 1])[2])
+    ind_p["williams_r_threshold"] = trial.suggest_int("williams_r_threshold", _get_r("williams_r_threshold", [-70, -30, 5])[0], _get_r("williams_r_threshold", [-70, -30, 5])[1], step=_get_r("williams_r_threshold", [-70, -30, 5])[2])
+
+    trial_params["stop_loss_atr_multiplier"] = trial.suggest_float("sl_atr_mult", _get_r("stop_loss_atr_multiplier", [1.5, 3.5, 0.1])[0], _get_r("stop_loss_atr_multiplier", [1.5, 3.5, 0.1])[1], step=_get_r("stop_loss_atr_multiplier", [1.5, 3.5, 0.1])[2])
+    trial_params["take_profit_atr_multiplier"] = trial.suggest_float("tp_atr_mult", _get_r("tp_atr_mult", [1.5, 5.0, 0.1])[0], _get_r("tp_atr_mult", [1.5, 5.0, 0.1])[1], step=_get_r("tp_atr_mult", [1.5, 5.0, 0.1])[2])
+    trial_params["risk_per_trade"] = trial.suggest_float("risk_per_trade", _get_r("risk_per_trade", [0.005, 0.025, 0.001])[0], _get_r("risk_per_trade", [0.005, 0.025, 0.001])[1], step=_get_r("risk_per_trade", [0.005, 0.025, 0.001])[2])
 
     # Create a new config instance for this trial, merging with base
     trial_config_obj = StrategyConfig(params_override=trial_params) # This will use base_config_path from global StrategyConfig

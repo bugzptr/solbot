@@ -54,6 +54,13 @@
         "max_results_to_keep": 20,          
         "cache_klines_freshness_hours": 4  
     },
+    "paper_trading": {
+    "enabled": true, 
+    "initial_equity": 10000,
+    "check_interval_seconds": 300,
+    "state_file": "results/paper_trading_state.json", 
+    "trade_log_file": "results/paper_trading_log.csv" 
+},
     "run_action": "OPTIMIZE", 
     "optuna_trials": 500      
 }

@@ -82,25 +82,27 @@ default_config_for_fallback = {
 # --- Configuration Class ---
 class StrategyConfig: 
     def __init__(self, params_override: Optional[Dict[str, Any]] = None):
-        self.params = self._load_base_config()
+        self.config_path = BASE_CONFIG_PATH # Store the global path it intends to use
+        self.params = self._load_base_config() # _load_base_config will use self.config_path
         if params_override:
             self._deep_update(self.params, params_override)
+        # logger.debug("StrategyConfig initialized.")
 
     def _load_base_config(self) -> Dict[str, Any]:
         current_logger_cfg = logging.getLogger("SOLUSDT_NNFX_Bot.Config") 
-        if not BASE_CONFIG_PATH.exists():
+        if not self.config_path.exists(): 
             can_log_properly = current_logger_cfg.hasHandlers() and \
                                any(isinstance(h, logging.StreamHandler) and 
                                    h.stream in [sys.stdout, sys.stderr] for h in current_logger_cfg.handlers)
 
-            log_msg_not_found = f"Base strategy config file not found: {BASE_CONFIG_PATH}. Using hardcoded fallback defaults."
+            log_msg_not_found = f"Base strategy config file not found: {self.config_path}. Using hardcoded fallback defaults."
             if can_log_properly: current_logger_cfg.warning(log_msg_not_found)
             else: print(f"PRINT WARNING: {log_msg_not_found}", file=sys.stderr)
             
             try:
-                BASE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                with open(BASE_CONFIG_PATH, "w") as f_cfg: json.dump(default_config_for_fallback, f_cfg, indent=4)
-                msg_created = f"Created dummy strategy config at {BASE_CONFIG_PATH}. Please review and customize."
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.config_path, "w") as f_cfg: json.dump(default_config_for_fallback, f_cfg, indent=4)
+                msg_created = f"Created dummy strategy config at {self.config_path}. Please review and customize."
                 if can_log_properly: current_logger_cfg.info(msg_created)
                 else: print(f"PRINT INFO: {msg_created}", file=sys.stderr)
             except Exception as e_create_cfg: 
@@ -109,12 +111,12 @@ class StrategyConfig:
                 else: print(f"PRINT ERROR: {err_msg_create}", file=sys.stderr)
             return default_config_for_fallback.copy() 
         try:
-            with open(BASE_CONFIG_PATH, "r") as f: return json.load(f)
+            with open(self.config_path, "r") as f: return json.load(f) 
         except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON from {BASE_CONFIG_PATH}: {e}. Using fallback defaults.")
+            logger.error(f"Error decoding JSON from {self.config_path}: {e}. Using fallback defaults.")
             return default_config_for_fallback.copy()
         except Exception as e:
-            logger.error(f"Error loading base config {BASE_CONFIG_PATH}: {e}. Using fallback defaults.")
+            logger.error(f"Error loading base config {self.config_path}: {e}. Using fallback defaults.")
             return default_config_for_fallback.copy()
 
     def _deep_update(self, d, u):
@@ -492,12 +494,17 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
 
     ind_p = trial_params_override["indicators"]
     # Suggesting parameters for indicators
-    for ind_param_name, default_range in default_config_for_fallback["optuna_parameter_ranges"].items(): 
+    # Ensure default_config_for_fallback["optuna_parameter_ranges"] is used if base_config_instance doesn't have some keys
+    # Or better, ensure base_config_instance.get("optuna_parameter_ranges") provides all necessary keys.
+    # The current _get_opt_range_def uses opt_ranges from the passed base_config_instance.
+    
+    # Iterate over the defined optimizable parameters in the base config
+    for ind_param_name in base_config_instance.get("optuna_parameter_ranges", {}).keys():
+        default_range = default_config_for_fallback["optuna_parameter_ranges"].get(ind_param_name, [0,1,1]) # Fallback range
         current_range = _get_opt_range_def(ind_param_name, default_range)
         optuna_key = ind_param_name 
         
         if ind_param_name in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
-            # These keys are already top-level in trial_params_override due to its initialization
             trial_params_override[ind_param_name] = trial.suggest_float(optuna_key, current_range[0], current_range[1], step=current_range[2])
         else: # Assumed to be an indicator param
             if isinstance(current_range[0], float) or isinstance(current_range[1], float) or \
@@ -535,8 +542,12 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
     logger_wfa.info(f"WFA: Attempting to fetch up to {wfa_kline_limit} candles for {symbol} for full WFA range.")
     full_hist_df = api.get_klines(symbol, base_config_for_wfa.get("granularity","4H"), limit=wfa_kline_limit) 
     
+    # Ensure 'granularity' key exists and is valid for calculation, e.g., "4H" -> 4
+    granularity_str = base_config_for_wfa.get("granularity","4H")
+    hours_per_candle = int(''.join(filter(str.isdigit, granularity_str))) if granularity_str[:-1].isdigit() else 4 # Default to 4 if parse fails
+    
     min_total_candles_needed_for_wfa = base_config_for_wfa.get("backtest_min_data_after_indicators",50) + \
-                                   (wfa_cfg.get("is_period_days_multiple_of_oos",3) * wfa_cfg.get("oos_period_days",90) + wfa_cfg.get("oos_period_days",90)) / (24/int(base_config_for_wfa.get("granularity","4H")[0]))
+                                   (wfa_cfg.get("is_period_days_multiple_of_oos",3) * wfa_cfg.get("oos_period_days",90) + wfa_cfg.get("oos_period_days",90)) * (24 / hours_per_candle)
 
 
     if full_hist_df.empty or len(full_hist_df) < min_total_candles_needed_for_wfa :
@@ -567,8 +578,8 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
 
     for i in range(num_oos):
         oos_e_dt, oos_s_dt = oos_end_dt, oos_end_dt - pd.Timedelta(days=oos_days)
-        is_e_dt, is_s_dt = oos_s_dt - pd.Timedelta(hours=int(base_config_for_wfa.get("granularity","4H")[0])*1), \
-                           oos_s_dt - pd.Timedelta(hours=int(base_config_for_wfa.get("granularity","4H")[0])*1) - pd.Timedelta(days=is_days)
+        is_e_dt, is_s_dt = oos_s_dt - pd.Timedelta(hours=hours_per_candle), \
+                           oos_s_dt - pd.Timedelta(hours=hours_per_candle) - pd.Timedelta(days=is_days)
         
         if is_s_dt < full_hist_df.index[0] or oos_s_dt < full_hist_df.index[0]: 
             logger_wfa.warning(f"WFA period {num_oos-i} extends beyond available data start ({full_hist_df.index[0].date()}). Stopping WFA.")
@@ -582,7 +593,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
         min_len_for_oos_slice = base_config_for_wfa.get("backtest_min_data_after_get_klines",100) 
         if oos_data_slice.empty or len(oos_data_slice) < min_len_for_oos_slice:
             logger_wfa.warning(f"WFA OOS {num_oos-i}: Not enough data in slice ({len(oos_data_slice)} vs {min_len_for_oos_slice}). Skipping."); 
-            oos_end_dt = is_s_dt - pd.Timedelta(hours=int(base_config_for_wfa.get("granularity","4H")[0])*1); continue 
+            oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle); continue 
         
         oos_res = wfa_system.backtest_pair(symbol,data_df_override=oos_data_slice,date_from=oos_s_dt,date_to=oos_e_dt)
         
@@ -595,7 +606,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
                             "is_start_date":is_s_dt, "is_end_date":is_e_dt, 
                             "oos_start_date":oos_s_dt, "oos_end_date":oos_e_dt, 
                             **oos_res})
-        oos_end_dt = is_s_dt - pd.Timedelta(hours=int(base_config_for_wfa.get("granularity","4H")[0])*1) 
+        oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle) 
 
     if all_oos_res:
         df_oos = pd.DataFrame(all_oos_res).sort_values("wfa_period_num"); 
@@ -616,17 +627,26 @@ if __name__ == "__main__":
 
     ts_run = datetime.now().strftime('%Y%m%d_%H%M%S')
     h_file_log = None
-    # Create all necessary directories at the start
-    for dir_p_str in ["config","data","logs","results/optuna_studies","results/walk_forward_reports"]: 
-        Path(dir_p_str).mkdir(parents=True,exist_ok=True)
+    for dir_p_str in ["config","data","logs","results/optuna_studies","results/walk_forward_reports"]: Path(dir_p_str).mkdir(parents=True,exist_ok=True)
     
     try:
         log_f_path = Path("logs")/f"solusdt_bot_run_{ts_run}.log"
         h_file_log=logging.FileHandler(log_f_path); h_file_log.setLevel(logging.INFO)
-        h_file_log.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        # Use a more detailed formatter for the file log if needed, especially for multiprocessing
+        file_formatter = logging.Formatter('%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s')
+        h_file_log.setFormatter(file_formatter)
         logging.getLogger().addHandler(h_file_log) 
         
-        # Initialize global config which loads from file or creates dummy
+        # Configure console handler for main process
+        # This ensures main process logs are distinguishable or simpler
+        # This might conflict if basicConfig already set a StreamHandler, so be careful or clear existing.
+        # For simplicity, assume basicConfig's StreamHandler is the one to modify if needed.
+        for h_console_main in logging.getLogger().handlers: # Modify existing console handlers
+            if isinstance(h_console_main, logging.StreamHandler) and not isinstance(h_console_main, logging.FileHandler):
+                h_console_main.setLevel(logging.INFO) # Set console to INFO for less verbosity
+                h_console_main.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')) # Simpler format for console
+        
+        # Re-initialize global config instance AFTER logger is fully set up for its own init messages
         strategy_config_global = StrategyConfig() 
         logger.info(f"SOLUSDT NNFX Bot Run ID: {ts_run}")
         logger.info(f"Using Base Strategy Config: {strategy_config_global.config_path}")
@@ -686,7 +706,7 @@ if __name__ == "__main__":
                     logger.error(f"Error saving BACKTEST_ONLY result to JSON: {e_json_save}")
 
         if ACTION in ["WALK_FORWARD", "BOTH"]:
-            params_for_wfa = None
+            params_for_wfa = None # This should be a flat dict as returned by Optuna study.best_params
             if best_params_from_optuna_run:
                 logger.info("Using parameters from the current Optuna run for WFA.")
                 params_for_wfa = best_params_from_optuna_run 
@@ -699,19 +719,19 @@ if __name__ == "__main__":
                 else:
                     logger.warning("No optimized params from current Optuna run or saved files. WFA will use base config from solusdt_strategy_base.json.")
                     temp_base_cfg_for_wfa = StrategyConfig() 
-                    params_for_wfa = {}
+                    params_for_wfa = {} # Construct a flat dict
                     opt_ranges_from_base = temp_base_cfg_for_wfa.get("optuna_parameter_ranges", {})
                     for k_wfa_opt in opt_ranges_from_base.keys():
                         param_path_in_config = f"indicators.{k_wfa_opt}" 
-                        if k_wfa_opt in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
-                            param_path_in_config = k_wfa_opt 
-                        elif k_wfa_opt == "sl_atr_mult": param_path_in_config = "stop_loss_atr_multiplier"
+                        if k_wfa_opt == "sl_atr_mult": param_path_in_config = "stop_loss_atr_multiplier"
                         elif k_wfa_opt == "tp_atr_mult": param_path_in_config = "take_profit_atr_multiplier"
+                        elif k_wfa_opt == "risk_per_trade": param_path_in_config = "risk_per_trade"
                         
-                        params_for_wfa[k_wfa_opt] = temp_base_cfg_for_wfa.get(param_path_in_config)
+                        params_for_wfa[k_wfa_opt] = temp_base_cfg_for_wfa.get(param_path_in_config, default_config_for_fallback.get(param_path_in_config)) # Use default_config as absolute fallback
                     logger.info(f"Constructed WFA params from base config: {params_for_wfa}")
 
             if params_for_wfa: 
+                 # Pass the global strategy_config_global which loads solusdt_strategy_base.json for WFA structure
                  run_walk_forward_analysis(SYMBOL, params_for_wfa, api_cfg, strategy_config_global)
             else:
                  logger.error("Cannot run WFA: No parameters available (neither from current opt nor loaded).")
@@ -720,5 +740,5 @@ if __name__ == "__main__":
     finally:
         logger.info(f"Run {ts_run} finished.")
         if h_file_log: 
-            h_file_log.close() # Close file before removing handler
+            h_file_log.close() 
             logging.getLogger().removeHandler(h_file_log)

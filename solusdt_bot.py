@@ -459,7 +459,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     # Create a new config instance for this trial, merging with base
     trial_config_obj = StrategyConfig(params_override=trial_params) # This will use base_config_path from global StrategyConfig
 
-    api_trial = BitgetAPI(**api_config)
+    api_trial = BitgetAPI()
     system_trial = DualNNFXSystem(api_trial, trial_config_obj)
     symbol_to_opt = trial_config_obj.get("symbol", "SOLUSDT") # Get symbol from this trial's config
     
@@ -476,7 +476,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict: Dict, api_conf
     if not wfa_cfg.get("enabled", False): logger_wfa.info(f"WFA for {symbol} disabled. Skipping."); return
     logger_wfa.info(f"--- Starting WFA for {symbol} ---")
 
-    api = BitgetAPI(**api_config)
+    api = BitgetAPI()
     full_hist_df = api.get_klines(symbol, base_config_for_wfa.get("granularity","4H"), limit=2000) # Fetch large history
     if full_hist_df.empty or len(full_hist_df) < base_config_for_wfa.get("backtest_min_data_after_indicators",50)*wfa_cfg.get("num_oos_periods",4):
         logger_wfa.error(f"Not enough history for {symbol} for WFA. Fetched {len(full_hist_df)}."); return
@@ -574,7 +574,7 @@ if __name__ == "__main__":
         if ACTION == "BACKTEST_ONLY": # Simple backtest with base config
             logger.info(f"--- Running Single Backtest for {SYMBOL} with Base Config ---")
             cfg_backtest_only = StrategyConfig() # Uses solusdt_strategy_base.json
-            api_bt_only = BitgetAPI(**api_cfg)
+            api_bt_only = BitgetAPI()
             system_bt_only = DualNNFXSystem(api_bt_only, cfg_backtest_only)
             result_bt_only = system_bt_only.backtest_pair(SYMBOL)
             logger.info(f"Backtest Result for {SYMBOL}: Score={system_bt_only._calculate_score(result_bt_only):.2f}, Trades={result_bt_only.get('total_trades',0)}, PnL%={result_bt_only.get('total_return_pct',0):.2f}%")

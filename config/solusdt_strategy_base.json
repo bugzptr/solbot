@@ -35,9 +35,25 @@
         "take_profit_atr_multiplier_opt": { "min": 1.5, "max": 5.0, "step": 0.1 },
         "risk_per_trade_opt": { "min": 0.005, "max": 0.025, "step": 0.001 }
     },
-    "walk_forward": {},
-    "scoring_weights": {},
-    "cleanup": {},
+    "walk_forward": { 
+        "enabled": false,                       
+        "full_data_start_date": "2021-01-01", 
+        "num_oos_periods": 4,             
+        "oos_period_days": 90,            
+        "is_period_days_multiple_of_oos": 3 
+    },
+    "scoring_weights": {
+        "win_rate_weight": 0.20,           
+        "total_return_pct_weight": 0.20,    
+        "sharpe_ratio_weight": 0.25,       
+        "max_drawdown_pct_penalty_weight": 0.05,
+        "total_trades_factor_weight": 0.05  
+    },
+    "cleanup": {
+        "cache_days_old": 7,               
+        "max_results_to_keep": 20,          
+        "cache_klines_freshness_hours": 4  
+    },
     "run_action": "OPTIMIZE", 
-    "optuna_trials": 30      
+    "optuna_trials": 500      
 }

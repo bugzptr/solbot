@@ -37,7 +37,7 @@ API_CONFIG_PATH = Path("config/api_config.json")
 default_config_for_fallback = {
     "symbol": "SOLUSDT", 
     "granularity": "4H",
-    "backtest_kline_limit": 1000, 
+    "backtest_kline_limit": 1000, # This is the TOTAL desired if no date range, or chunk size hint
     "backtest_min_data_after_get_klines": 200,
     "backtest_min_data_after_indicators": 100,
     "backtest_min_trades_for_ranking": 3,
@@ -58,14 +58,13 @@ default_config_for_fallback = {
         "total_trades_factor_weight": 0.05 
     },
     "optuna_parameter_ranges": { 
-        # These keys should match what's in your actual solusdt_strategy_base.json optuna_parameter_ranges
         "tema_length": {"min": 15, "max": 40, "step": 1}, 
         "cci_length": {"min": 10, "max": 30, "step": 1},
         "efi_length": {"min": 10, "max": 30, "step": 1},
         "kijun_sen_length": {"min": 20, "max": 52, "step": 2}, 
         "williams_r_length": {"min": 10, "max": 30, "step": 1}, 
         "cmf_length": {"min": 14, "max": 30, "step": 1},
-        "williams_r_threshold_opt": {"min": -70, "max": -30, "step": 5}, # Using _opt suffix for clarity
+        "williams_r_threshold_opt": {"min": -70, "max": -30, "step": 5},
         "stop_loss_atr_multiplier_opt": {"min": 1.5, "max": 3.5, "step": 0.1}, 
         "take_profit_atr_multiplier_opt": {"min": 1.5, "max": 5.0, "step": 0.1}, 
         "risk_per_trade_opt": {"min": 0.005, "max": 0.025, "step": 0.001} 
@@ -142,7 +141,7 @@ class StrategyConfig:
 strategy_config_global = StrategyConfig()
 
 class BitgetAPI: 
-    def __init__(self, api_key: str = "", secret_key: str = "", passphrase: str = ""): # Corrected __init__
+    def __init__(self, api_key: str = "", secret_key: str = "", passphrase: str = ""):
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
@@ -178,85 +177,163 @@ class BitgetAPI:
         }
         return {k: v for k, v in headers.items() if v} 
 
-    def get_klines(self, symbol: str, granularity: str = "4H", limit: int = 1000, 
-                   start_time_ms: Optional[int] = None, end_time_ms: Optional[int] = None) -> pd.DataFrame:
+    def get_klines(self, symbol: str, granularity: str = "4H", 
+                   total_limit: int = 1000, # Renamed limit to total_limit for clarity
+                   start_time_ms: Optional[int] = None, 
+                   end_time_ms: Optional[int] = None) -> pd.DataFrame:
+        
         current_config = strategy_config_global 
         api_symbol_for_request = symbol if symbol.endswith('_SPBL') else symbol + '_SPBL'
         safe_symbol_fname = api_symbol_for_request.replace('/', '_')
-        cache_file_suffix = ""
+        
+        cache_file_suffix = "_full_history" 
         if start_time_ms and end_time_ms:
-            s_date = datetime.fromtimestamp(start_time_ms/1000, tz=timezone.utc).strftime('%Y%m%d')
-            e_date = datetime.fromtimestamp(end_time_ms/1000, tz=timezone.utc).strftime('%Y%m%d')
-            cache_file_suffix = f"_{s_date}_{e_date}"
-        cache_file = Path("data") / f"{safe_symbol_fname}_{granularity.lower()}_klines{cache_file_suffix}.csv" 
+            s_date_str = datetime.fromtimestamp(start_time_ms/1000, tz=timezone.utc).strftime('%Y%m%d')
+            e_date_str = datetime.fromtimestamp(end_time_ms/1000, tz=timezone.utc).strftime('%Y%m%d')
+            cache_file_suffix = f"_{s_date_str}_{e_date_str}"
+        elif start_time_ms: 
+            s_date_str = datetime.fromtimestamp(start_time_ms/1000, tz=timezone.utc).strftime('%Y%m%d')
+            cache_file_suffix = f"_from_{s_date_str}_limit{total_limit}" # Suffix includes limit if start_time but no end_time
+        elif total_limit: 
+            cache_file_suffix = f"_last_{total_limit}"
+
+        cache_file = Path("data") / f"{safe_symbol_fname}_{granularity.lower()}_klines{cache_file_suffix}.csv"
         expected_cols = ['open', 'high', 'low', 'close', 'volume']
         cache_freshness_h = current_config.get("cleanup.cache_klines_freshness_hours", 4)
 
-        if cache_file.exists(): 
-            if (time.time() - cache_file.stat().st_mtime) < cache_freshness_h * 3600 and not (start_time_ms or end_time_ms):
+        if cache_file.exists():
+            # Only use general cache if the request parameters match what would generate this cache file
+            # i.e., if requesting last N candles and not a specific date range, and cache isn't too old.
+            use_cache = not (start_time_ms or end_time_ms) # Prioritize fresh fetch for specific date ranges for WFA
+            if use_cache and (time.time() - cache_file.stat().st_mtime) < cache_freshness_h * 3600:
                 try:
                     df_cache = pd.read_csv(cache_file, index_col=0, parse_dates=True)
                     if not df_cache.empty and all(c in df_cache.columns for c in expected_cols) and \
-                       not (df_cache[expected_cols].isnull().values.any() or np.isinf(df_cache[expected_cols].values).any()): 
+                       not (df_cache[expected_cols].isnull().values.any() or np.isinf(df_cache[expected_cols].values).any()):
                         logger.debug(f"[{symbol}] Using valid cached klines.")
+                        # Trim if needed, as cache might have more than requested 'total_limit' if it was for a larger fetch previously
+                        if total_limit and len(df_cache) > total_limit:
+                             return df_cache.sort_index(ascending=False).head(total_limit).sort_index(ascending=True)
                         return df_cache
                 except Exception as e_cache: logger.warning(f"[{symbol}] Kline cache read error: {e_cache}. Refetching.")
         
-        time.sleep(self.rate_limit_delay)
-        request_path = "/api/spot/v1/market/candles"
-        params = {"symbol": api_symbol_for_request, "period": granularity.lower(), "limit": str(limit)}
-        if start_time_ms: params["after"] = str(start_time_ms) 
-        if end_time_ms: params["before"] = str(end_time_ms)   
+        # --- Chunking Logic ---
+        all_fetched_klines_dfs = []
+        API_MAX_LIMIT_PER_CALL = 1000 # Confirmed by user for Bitget
         
-        max_r, df_out = 3, pd.DataFrame()
-        for attempt in range(max_r):
-            headers = self._get_headers("GET", request_path) 
-            current_logger_api = logging.getLogger("SOLUSDT_NNFX_Bot.API.get_klines") 
-            log_msg_parts = [f"[{symbol}] Preparing kline request (Attempt {attempt+1}):", f"  URL: {self.base_url}{request_path}", f"  Params: {params}"]
-            if self.api_key: 
-                log_msg_parts.append("  Headers:")
-                for h_key, h_val in headers.items(): 
-                    if "SIGN" in h_key.upper() or "KEY" in h_key.upper() or "PASSPHRASE" in h_key.upper() and len(h_val) > 8:
-                        log_msg_parts.append(f"    {h_key}: {h_val[:4]}...{h_val[-4:] if len(h_val) > 8 else ''}")
-                    else: log_msg_parts.append(f"    {h_key}: {h_val}")    
-            current_logger_api.debug("\n".join(log_msg_parts))
+        current_call_end_time_ms = end_time_ms 
+        klines_fetched_so_far = 0
+        
+        # Estimate number of calls needed if fetching by total_limit backward from now/end_time_ms
+        # or fetching backward until start_time_ms
+        # Max loops to prevent infinite loops if API behaves unexpectedly
+        max_api_calls = (total_limit // API_MAX_LIMIT_PER_CALL) + 5 if total_limit else 20 # Default 20 calls if fetching until start_time
 
+        for call_num in range(max_api_calls):
+            if not start_time_ms and klines_fetched_so_far >= total_limit:
+                logger.debug(f"[{symbol}] Fetched desired total_limit of {total_limit} candles.")
+                break
+
+            # Determine limit for this specific API call
+            remaining_to_fetch = total_limit - klines_fetched_so_far
+            current_chunk_api_limit = min(API_MAX_LIMIT_PER_CALL, remaining_to_fetch if not start_time_ms and remaining_to_fetch > 0 else API_MAX_LIMIT_PER_CALL)
+            if current_chunk_api_limit <= 0 and not start_time_ms : # Should only happen if limit was 0
+                 break
+
+
+            time.sleep(self.rate_limit_delay)
+            request_path = "/api/spot/v1/market/candles"
+            params_chunk = {"symbol": api_symbol_for_request, "period": granularity.lower(), "limit": str(current_chunk_api_limit)}
+            
+            if current_call_end_time_ms: 
+                params_chunk["before"] = str(current_call_end_time_ms)
+            
+            df_chunk_this_call = pd.DataFrame()
+            max_chunk_retries = 3 
+            for attempt in range(max_chunk_retries):
+                headers = self._get_headers("GET", request_path)
+                try:
+                    logger.debug(f"[{symbol}] Fetching chunk {call_num+1} (API attempt {attempt+1}): Limit={current_chunk_api_limit}, Before={current_call_end_time_ms}")
+                    resp = self.session.get(f"{self.base_url}{request_path}", params=params_chunk, headers=headers, timeout=20)
+                    logger.debug(f"[{symbol}] Chunk API Resp: {resp.status_code}, Text: {resp.text[:150]}")
+                    resp.raise_for_status()
+                    api_data_chunk = resp.json()
+
+                    if str(api_data_chunk.get('code')) == '00000' and isinstance(api_data_chunk.get('data'), list):
+                        if not api_data_chunk['data']:
+                            logger.info(f"[{symbol}] API returned no more data for chunk (Before={current_call_end_time_ms}). Likely end of available history.")
+                            df_chunk_this_call = pd.DataFrame() 
+                            break 
+                        
+                        temp_df = pd.DataFrame(api_data_chunk['data'], columns=['ts', 'open', 'high', 'low', 'close', 'baseVol', 'quoteVol'])
+                        temp_df = temp_df.rename(columns={'ts': 'timestamp', 'baseVol': 'volume'})
+                        temp_df['timestamp'] = pd.to_datetime(temp_df['timestamp'].astype(np.int64), unit='ms')
+                        temp_df.set_index('timestamp', inplace=True)
+                        
+                        for col_name in expected_cols:
+                            if col_name in temp_df.columns: temp_df[col_name] = pd.to_numeric(temp_df[col_name], errors='coerce')
+                            else: logger.error(f"[{symbol}] Critical chunk kline col '{col_name}' missing!"); temp_df = pd.DataFrame(); break 
+                        
+                        if not temp_df.empty:
+                            df_chunk_this_call = temp_df[expected_cols].copy()
+                            df_chunk_this_call.sort_index(inplace=True) 
+                            df_chunk_this_call.replace([np.inf, -np.inf], np.nan, inplace=True); df_chunk_this_call.dropna(inplace=True)
+                        break 
+                    else: 
+                        err_msg, err_code = api_data_chunk.get('msg','Err'), api_data_chunk.get('code','N/A')
+                        logger.warning(f"[{symbol}] API error for chunk (Code {err_code}): {err_msg}")
+                        if str(err_code) == '40309': df_chunk_this_call = pd.DataFrame(); break 
+                        if attempt < max_chunk_retries - 1: time.sleep(1 + 2**attempt + np.random.rand())
+                        else: df_chunk_this_call = pd.DataFrame() 
+                except Exception as e_chunk_req:
+                    logger.warning(f"[{symbol}] Request failed for chunk (att {attempt+1}): {e_chunk_req}")
+                    if attempt < max_chunk_retries - 1: time.sleep(1 + 2**attempt + np.random.rand())
+                    else: df_chunk_this_call = pd.DataFrame() 
+            
+            if df_chunk_this_call.empty:
+                logger.info(f"[{symbol}] Empty chunk after retries or API indicated no more data. Stopping fetch for this request.")
+                break 
+
+            all_fetched_klines_dfs.append(df_chunk_this_call)
+            klines_fetched_so_far += len(df_chunk_this_call)
+            
+            oldest_ts_in_chunk_ms = int(df_chunk_this_call.index.min().timestamp() * 1000)
+            
+            if start_time_ms and oldest_ts_in_chunk_ms <= start_time_ms:
+                logger.debug(f"[{symbol}] Oldest data in chunk ({oldest_ts_in_chunk_ms}) passed specified start_time_ms ({start_time_ms}). Stopping fetch.")
+                break 
+            
+            current_call_end_time_ms = oldest_ts_in_chunk_ms # For the next iteration, fetch before this
+        
+        if not all_fetched_klines_dfs:
+            logger.warning(f"[{symbol}] No klines fetched after all chunking attempts.")
+            return pd.DataFrame()
+
+        final_df = pd.concat(all_fetched_klines_dfs)
+        if final_df.empty: return pd.DataFrame()
+            
+        final_df = final_df[~final_df.index.duplicated(keep='first')] 
+        final_df.sort_index(inplace=True) 
+
+        if start_time_ms: # Filter out any data older than start_time_ms due to chunking boundaries
+            final_df = final_df[final_df.index >= pd.to_datetime(start_time_ms, unit='ms', utc=True)]
+        if end_time_ms: # Filter out any data newer than end_time_ms
+            final_df = final_df[final_df.index < pd.to_datetime(end_time_ms, unit='ms', utc=True)] # 'before' is exclusive
+
+        # If total_limit was specified and no specific date range, trim to total_limit from most recent
+        if total_limit > 0 and not (start_time_ms or end_time_ms):
+            final_df = final_df.tail(total_limit)
+
+        logger.info(f"[{symbol}] Successfully fetched a total of {len(final_df)} klines after chunking & filtering.")
+        
+        if not final_df.empty and not (start_time_ms or end_time_ms and cache_file_suffix != f"_last_{total_limit}"): 
             try:
-                resp = self.session.get(f"{self.base_url}{request_path}", params=params, headers=headers, timeout=20)
-                logger.debug(f"[{symbol}] Kline API (att {attempt+1}): {resp.status_code}, Resp: {resp.text[:250]}")
-                resp.raise_for_status()
-                api_data = resp.json()
-                if str(api_data.get('code')) == '00000' and isinstance(api_data.get('data'), list):
-                    if not api_data['data']: logger.warning(f"[{symbol}] API success but no candle data for range/limit."); return df_out
-                    df_temp = pd.DataFrame(api_data['data'], columns=['ts', 'open', 'high', 'low', 'close', 'baseVol', 'quoteVol'])
-                    df_temp = df_temp.rename(columns={'ts': 'timestamp', 'baseVol': 'volume'})
-                    df_temp['timestamp'] = pd.to_datetime(df_temp['timestamp'].astype(np.int64), unit='ms')
-                    df_temp.set_index('timestamp', inplace=True)
-                    for col_name in expected_cols:
-                        if col_name in df_temp.columns: df_temp[col_name] = pd.to_numeric(df_temp[col_name], errors='coerce')
-                        else: logger.error(f"[{symbol}] Critical kline col '{col_name}' missing!"); return df_out
-                    df_out = df_temp[expected_cols].copy() 
-                    df_out.sort_index(inplace=True)
-                    df_out.replace([np.inf, -np.inf], np.nan, inplace=True); df_out.dropna(inplace=True)
-                    if df_out.empty: logger.warning(f"[{symbol}] No valid klines after processing."); return df_out
-                    try: 
-                        if not (start_time_ms or end_time_ms): 
-                            df_out.to_csv(cache_file); logger.debug(f"[{symbol}] Fetched & cached klines.")
-                    except Exception as e_csv: logger.error(f"[{symbol}] Error caching klines: {e_csv}")
-                    return df_out 
-                else:
-                    err_msg, err_code = api_data.get('msg', 'Unknown API error'), api_data.get('code', 'N/A')
-                    logger.warning(f"[{symbol}] API error klines (Code {err_code}): {err_msg}")
-                    if str(err_code) == '40309': return df_out 
-                    if attempt < max_r - 1: time.sleep(1 + 2**attempt + np.random.rand()) 
-            except requests.exceptions.RequestException as e_req:
-                logger.warning(f"[{symbol}] Request failed klines (att {attempt+1}): {e_req}")
-                if attempt < max_r - 1: time.sleep(1 + 2**attempt + np.random.rand())
-            except json.JSONDecodeError as e_json:
-                logger.error(f"[{symbol}] JSON decode error klines (att {attempt+1}): {e_json}. Resp: {resp.text[:200] if 'resp' in locals() else 'N/A'}")
-                if attempt < max_r - 1: time.sleep(1 + 2**attempt + np.random.rand())
-        logger.error(f"[{symbol}] Failed to fetch klines after {max_r} attempts.")
-        return df_out
+                final_df.to_csv(cache_file)
+                logger.debug(f"[{symbol}] Saved combined klines to cache: {cache_file}")
+            except Exception as e_final_csv:
+                logger.error(f"[{symbol}] Error saving combined klines to cache: {e_final_csv}")
+        
+        return final_df
 
 class NNFXIndicators: 
     def __init__(self, config: StrategyConfig): self.config_params = config.get("indicators", {})
@@ -326,7 +403,6 @@ class DualNNFXSystem:
             log.debug(f"[{symbol}] Using pre-fetched data_df_override for backtest (Length: {len(df_k)})")
         else:
             start_ms, end_ms = (int(d.replace(tzinfo=timezone.utc).timestamp()*1000) if d and isinstance(d, datetime) else None for d in [date_from, date_to])
-            # Use kline limit from the current (potentially trial-specific) config
             kline_limit_to_use = cfg.get("backtest_kline_limit", 1000) 
             df_k = self.api.get_klines(symbol,cfg.get("granularity","4H"), kline_limit_to_use, start_ms,end_ms)
         
@@ -492,11 +568,13 @@ class DualNNFXSystem:
 def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_config_instance: StrategyConfig) -> float: 
     logger_opt = logging.getLogger("OptunaObjective"); 
     logger_opt.info(f"Trial {trial.number} starting...") 
-    opt_ranges = base_config_instance.get("optuna_parameter_ranges", {}) # Use the passed base_config_instance
+    opt_ranges = base_config_instance.get("optuna_parameter_ranges", {})
     
     trial_params_override = {"indicators": {}} 
     
-    # Map from keys in your JSON's optuna_parameter_ranges to actual config structure
+    # This map translates keys from your JSON's "optuna_parameter_ranges"
+    # to the (config_section_in_StrategyConfig, key_in_that_section) used by your strategy code.
+    # ***** YOU MUST ENSURE THIS MAP IS CORRECT AND COMPLETE FOR YOUR JSON *****
     parameter_key_map_to_config = { 
         "tema_length": ("indicators", "tema_period"),
         "cci_length": ("indicators", "cci_period"),
@@ -510,18 +588,18 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
         "risk_per_trade_opt": (None, "risk_per_trade")
     }
     
-    # Iterate through the parameters defined for optimization in YOUR JSON config
     for optuna_json_key, range_info_dict in opt_ranges.items():
         if not (isinstance(range_info_dict, dict) and 
                 all(k in range_info_dict for k in ['min', 'max', 'step'])):
-            logger_opt.error(f"Trial {trial.number}: Malformed range for '{optuna_json_key}' in config: {range_info_dict}. Skipping this param.")
-            # Fallback to default_config_for_fallback structure if current config is malformed
+            logger_opt.error(f"Trial {trial.number}: Malformed range for '{optuna_json_key}' in config: {range_info_dict}. Using default fallback or skipping.")
+            # Fallback to default_config_for_fallback structure for this key if current config is malformed
             default_fallback_range_dict = default_config_for_fallback.get("optuna_parameter_ranges", {}).get(optuna_json_key)
             if isinstance(default_fallback_range_dict, dict) and all(k in default_fallback_range_dict for k in ['min', 'max', 'step']):
                 range_info_dict = default_fallback_range_dict
                 logger_opt.warning(f"Trial {trial.number}: Using hardcoded default fallback range dict for '{optuna_json_key}': {range_info_dict}")
             else:
-                continue # Skip if no valid range found even in fallback
+                logger_opt.error(f"Trial {trial.number}: Cannot find valid range for '{optuna_json_key}' even in fallback. Skipping this param for Optuna.")
+                continue 
         
         min_val, max_val, step_val = range_info_dict['min'], range_info_dict['max'], range_info_dict['step']
         
@@ -537,7 +615,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
         if is_float_suggestion:
             suggested_value = trial.suggest_float(optuna_json_key, min_val, max_val, step=step_val)
         else: 
-            current_step = int(step_val) if step_val is not None and step_val >=1 else 1 # Ensure step is at least 1 for int
+            current_step = int(step_val) if step_val is not None and step_val >=1 else 1 
             suggested_value = trial.suggest_int(optuna_json_key, int(min_val), int(max_val), step=current_step)
 
         if optuna_json_key in parameter_key_map_to_config:
@@ -547,8 +625,8 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
             elif section is None: 
                 trial_params_override[actual_config_key] = suggested_value
         else:
-            logger_opt.warning(f"Optuna Trial {trial.number}: Key '{optuna_json_key}' from optuna_parameter_ranges (JSON) "
-                               f"is not defined in 'parameter_key_map_to_config'. Parameter won't be applied correctly.")
+            logger_opt.warning(f"Optuna Trial {trial.number}: Key '{optuna_json_key}' from JSON optuna_parameter_ranges "
+                               f"is NOT found in 'parameter_key_map_to_config'. It will NOT be applied to strategy config correctly.")
     
     logger_opt.debug(f"Trial {trial.number}: Constructed trial_params_override: {trial_params_override}")
     
@@ -560,7 +638,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     res = system_trial.backtest_pair(symbol=symbol_to_opt) 
     if 'error' in res and res['error']!='No trades': 
         logger_opt.warning(f"Trial {trial.number} for {symbol_to_opt} error: {res['error']}. Optuna Params: {trial.params}, Constructed Params for trial: {trial_params_override}")
-        return -1e9 # Use a standard float for Optuna
+        return -1e9 
     
     score = system_trial._calculate_score(res) 
     logger_opt.info(f"T{trial.number:03d}: Score={score:<7.2f} Trd={res.get('total_trades',0):<3} PnL%={res.get('total_return_pct',0):<7.2f}% Optuna Params={trial.params}")
@@ -591,7 +669,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
     approx_total_candles = int(total_days_for_wfa_approx * candles_per_day) + base_config_for_wfa.get("backtest_min_data_after_indicators",100) 
     
     logger_wfa.info(f"WFA: Attempting to fetch up to {min(approx_total_candles, 2000)} candles for {symbol} for full WFA range.")
-    full_hist_df = api.get_klines(symbol, granularity_wfa, limit=min(approx_total_candles, 2000)) 
+    full_hist_df = api.get_klines(symbol, granularity_wfa, total_limit=min(approx_total_candles, 2000)) # Pass total_limit
     
     min_total_candles_needed_for_wfa_strict = base_config_for_wfa.get("backtest_min_data_after_indicators",50) + \
                                    int((is_days + oos_days) * candles_per_day)
@@ -604,35 +682,28 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
     all_oos_res=[]
     oos_end_dt = full_hist_df.index[-1] 
 
-    # --- Corrected WFA Parameter Reconstruction ---
     wfa_params_override_nested = {"indicators": {}}
-    # Define the map from Optuna trial param names (flat) to nested config structure
-    # These keys MUST match the keys used in `trial.suggest_*` (which come from your JSON `optuna_parameter_ranges`)
+    # Use the same map as in Optuna objective to reconstruct nested from flat
     parameter_key_map_from_optuna_to_config = { 
-        "tema_length": ("indicators", "tema_period"),
-        "cci_length": ("indicators", "cci_period"),
-        "efi_length": ("indicators", "elder_fi_period"), 
-        "kijun_sen_length": ("indicators", "kijun_sen_period"),
-        "williams_r_length": ("indicators", "williams_r_period"), 
-        "cmf_length": ("indicators", "cmf_window"),
+        "tema_length": ("indicators", "tema_period"), "cci_length": ("indicators", "cci_period"),
+        "efi_length": ("indicators", "elder_fi_period"), "kijun_sen_length": ("indicators", "kijun_sen_period"),
+        "williams_r_length": ("indicators", "williams_r_period"), "cmf_length": ("indicators", "cmf_window"),
         "williams_r_threshold_opt": ("indicators", "williams_r_threshold"),
         "stop_loss_atr_multiplier_opt": (None, "stop_loss_atr_multiplier"),
         "take_profit_atr_multiplier_opt": (None, "take_profit_atr_multiplier"),
         "risk_per_trade_opt": (None, "risk_per_trade")
     }
-    for opt_key, val_opt in optimized_params_dict_flat.items(): # optimized_params_dict_flat is from study.best_params
+    for opt_key, val_opt in optimized_params_dict_flat.items(): 
         if opt_key in parameter_key_map_from_optuna_to_config:
             section, actual_config_key = parameter_key_map_from_optuna_to_config[opt_key]
-            if section == "indicators":
-                wfa_params_override_nested["indicators"][actual_config_key] = val_opt
-            elif section is None: 
-                wfa_params_override_nested[actual_config_key] = val_opt
-        else:
-            logger_wfa.warning(f"WFA: Optuna best param key '{opt_key}' not found in mapping. It might not be applied correctly.")
-            # Decide on a fallback: either assume it's an indicator or ignore
-            # For safety, let's assume it might be an indicator if not a known top-level.
-            if opt_key not in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]: # if not one of the direct names
-                wfa_params_override_nested["indicators"][opt_key] = val_opt
+            if section == "indicators": wfa_params_override_nested["indicators"][actual_config_key] = val_opt
+            elif section is None: wfa_params_override_nested[actual_config_key] = val_opt
+        else: # Fallback for keys not in map, assume they are top-level or indicator based on name convention
+            if opt_key in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
+                 wfa_params_override_nested[opt_key] = val_opt
+            else: # Assume indicator param
+                 wfa_params_override_nested["indicators"][opt_key] = val_opt
+                 logger_wfa.debug(f"WFA: Optuna param '{opt_key}' not in key_map, assuming direct indicator param '{opt_key}'.")
 
 
     logger_wfa.debug(f"WFA using reconstructed optimized params for override: {wfa_params_override_nested}")
@@ -674,7 +745,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
         res_dir_wfa=Path("results/walk_forward_reports"); res_dir_wfa.mkdir(exist_ok=True, parents=True)
         fn_wfa=res_dir_wfa/f"wfa_report_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         for col_dt in ['is_start_date', 'is_end_date', 'oos_start_date', 'oos_end_date']:
-            if col_dt in df_oos.columns and not df_oos[col_dt].empty: # Check if column exists and is not empty
+            if col_dt in df_oos.columns and not df_oos[col_dt].empty: 
                  df_oos[col_dt] = pd.to_datetime(df_oos[col_dt]).dt.strftime('%Y-%m-%d')
         if 'trades' in df_oos.columns: df_oos['trades'] = df_oos['trades'].astype(str) 
         if 'equity_curve' in df_oos.columns: df_oos['equity_curve'] = df_oos['equity_curve'].astype(str)
@@ -763,39 +834,35 @@ if __name__ == "__main__":
                 params_for_wfa_flat = best_params_from_optuna_run 
             else:
                 study_dir = Path("results/optuna_studies")
-                # Load the most recent best_params file for the current SYMBOL
                 param_files = sorted(study_dir.glob(f"{SYMBOL.lower()}_opt_*_best_params.json"), key=os.path.getmtime, reverse=True)
                 if param_files:
                     logger.info(f"Loading best params for WFA from: {param_files[0]}")
                     with open(param_files[0], 'r') as f_latest_best: params_for_wfa_flat = json.load(f_latest_best) 
-                else: # Fallback to base config if no optuna params found
+                else:
                     logger.warning("No optimized params from current Optuna run or saved files. WFA will use parameters from solusdt_strategy_base.json.")
                     temp_base_cfg_for_wfa = strategy_config_global 
                     params_for_wfa_flat = {} 
-                    opt_ranges_from_base = temp_base_cfg_for_wfa.get("optuna_parameter_ranges", {}) # These are the keys Optuna would have used
+                    opt_ranges_from_base = temp_base_cfg_for_wfa.get("optuna_parameter_ranges", {})
                     
-                    # Map these Optuna keys to their values in the base config
-                    parameter_key_map_for_base_to_wfa = { 
-                        "tema_length": ("indicators", "tema_period"),
-                        "cci_length": ("indicators", "cci_period"),
-                        "efi_length": ("indicators", "elder_fi_period"), 
-                        "kijun_sen_length": ("indicators", "kijun_sen_period"),
-                        "williams_r_length": ("indicators", "williams_r_period"), 
-                        "cmf_length": ("indicators", "cmf_window"),
-                        "williams_r_threshold_opt": ("indicators", "williams_r_threshold"),
-                        "stop_loss_atr_multiplier_opt": (None, "stop_loss_atr_multiplier"),
-                        "take_profit_atr_multiplier_opt": (None, "take_profit_atr_multiplier"),
-                        "risk_per_trade_opt": (None, "risk_per_trade")
+                    # Define the mapping here as well, similar to optuna_objective
+                    param_key_map_for_base_to_wfa_flat = { 
+                        "tema_length": "indicators.tema_period",
+                        "cci_length": "indicators.cci_period",
+                        "efi_length": "indicators.elder_fi_period", 
+                        "kijun_sen_length": "indicators.kijun_sen_period",
+                        "williams_r_length": "indicators.williams_r_period", 
+                        "cmf_length": "indicators.cmf_window",
+                        "williams_r_threshold_opt": "indicators.williams_r_threshold",
+                        "stop_loss_atr_multiplier_opt": "stop_loss_atr_multiplier",
+                        "take_profit_atr_multiplier_opt": "take_profit_atr_multiplier",
+                        "risk_per_trade_opt": "risk_per_trade"
                     }
                     for opt_key in opt_ranges_from_base.keys():
-                        if opt_key in parameter_key_map_for_base_to_wfa:
-                            section, actual_key = parameter_key_map_for_base_to_wfa[opt_key]
-                            if section == "indicators":
-                                params_for_wfa_flat[opt_key] = temp_base_cfg_for_wfa.get(f"indicators.{actual_key}")
-                            elif section is None:
-                                params_for_wfa_flat[opt_key] = temp_base_cfg_for_wfa.get(actual_key)
-                        else: # If not in map, assume opt_key is the direct key in base_config (less likely for nested)
-                             params_for_wfa_flat[opt_key] = temp_base_cfg_for_wfa.get(f"indicators.{opt_key}", temp_base_cfg_for_wfa.get(opt_key))
+                        # This key (opt_key) is from your JSON e.g. "tema_length"
+                        # We need to get the corresponding value from the base config.
+                        # The value's path in base_config might be different.
+                        target_path = param_key_map_for_base_to_wfa_flat.get(opt_key, f"indicators.{opt_key}") # Default to indicators
+                        params_for_wfa_flat[opt_key] = temp_base_cfg_for_wfa.get(target_path)
                     logger.info(f"Constructed WFA params from base config (flat dict): {params_for_wfa_flat}")
 
             if params_for_wfa_flat: 

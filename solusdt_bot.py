@@ -12,7 +12,7 @@ import ta # Make sure 'ta' is installed: pip install ta
 from typing import Dict, List, Tuple, Optional, Union, Any
 import warnings
 import logging
-from pathlib import Path # CORRECTED: Added import for Path
+from pathlib import Path
 import sys
 import io
 import optuna # pip install optuna sqlalchemy
@@ -74,8 +74,8 @@ default_config_for_fallback = {
         "num_oos_periods": 4, "oos_period_days": 90, 
         "is_period_days_multiple_of_oos": 3 
     },
-    "paper_trading": { # Added paper trading defaults
-        "enabled": False, # Explicitly disable by default
+    "paper_trading": { 
+        "enabled": False, 
         "initial_equity": 10000,
         "check_interval_seconds": 300, 
         "state_file": "results/paper_trading_state.json",
@@ -148,22 +148,48 @@ class StrategyConfig:
 strategy_config_global = StrategyConfig()
 
 class BitgetAPI: 
-    def __init__(self, api_key: str = "", secret_key: str = "", passphrase: str = ""):
+    def __init__(self, api_key: str = "", secret_key: str = "", passphrase: str = "", sandbox: bool = True): # CORRECTED
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
-        self.base_url = "https://api.bitget.com"
+        self.sandbox_mode = sandbox # Store the sandbox mode
+
+        # IMPORTANT: Replace with ACTUAL Bitget Sandbox URL if you use it.
+        # This is a common pattern, but Bitget's might be different or non-existent for spot v1.
+        # If Bitget does not have a distinct sandbox URL for spot v1, always use the live URL.
+        PROD_URL = "https://api.bitget.com"
+        # SANDBOX_URL = "https://api-sandbox.bitget.com" # HYPOTHETICAL - VERIFY THIS
+        SANDBOX_URL = "https://api.bitget.com" # Using prod URL as placeholder if no sandbox for spot v1
+        
+        self.base_url = SANDBOX_URL if self.sandbox_mode else PROD_URL
+        
         self.session = requests.Session()
         self.rate_limit_delay = strategy_config_global.get("api_rate_limit_delay", 0.25)
 
+        # If constructor args are empty, try loading from API_CONFIG_PATH
         if not self.api_key and API_CONFIG_PATH.exists(): 
             logger.debug(f"API keys not provided to BitgetAPI constructor, attempting to load from {API_CONFIG_PATH}")
             try:
-                with open(API_CONFIG_PATH, "r") as f: api_creds = json.load(f)
-                self.api_key = api_creds.get("api_key", "")
-                self.secret_key = api_creds.get("secret_key", "")
-                self.passphrase = api_creds.get("passphrase", "")
-            except Exception as e: logger.error(f"Error loading fallback API config from {API_CONFIG_PATH} in constructor: {e}")
+                with open(API_CONFIG_PATH, "r") as f: 
+                    api_creds_file = json.load(f)
+                self.api_key = api_creds_file.get("api_key", "")
+                self.secret_key = api_creds_file.get("secret_key", "")
+                self.passphrase = api_creds_file.get("passphrase", "")
+                # Allow file to override sandbox status if constructor used default
+                if sandbox and "sandbox" in api_creds_file: # sandbox is True (default)
+                    file_sandbox_status = api_creds_file.get("sandbox")
+                    if isinstance(file_sandbox_status, bool) and file_sandbox_status != self.sandbox_mode:
+                        logger.info(f"Overriding sandbox mode from API config file. New sandbox: {file_sandbox_status}")
+                        self.sandbox_mode = file_sandbox_status
+                        self.base_url = SANDBOX_URL if self.sandbox_mode else PROD_URL
+                
+                # if self.api_key:
+                #     logger.info(f"API credentials successfully processed/loaded from {API_CONFIG_PATH} during constructor.")
+            except Exception as e:
+                logger.error(f"Error loading fallback API config from {API_CONFIG_PATH} in constructor: {e}")
+        
+        # Log final state after constructor and potential file load
+        # logger.info(f"Bitget API initialized. Base URL: {self.base_url} (Sandbox: {self.sandbox_mode}, API Key Present: {bool(self.api_key)})")
         
     def _generate_signature(self, timestamp: str, method: str, request_path: str, query_string: str = "", body_string: str = "") -> str:
         if not self.secret_key: return ""
@@ -222,15 +248,15 @@ class BitgetAPI:
         
         current_call_end_time_ms = end_time_ms 
         klines_fetched_so_far = 0
-        max_api_calls = (total_limit // API_MAX_LIMIT_PER_CALL) + 5 if total_limit else 20 
+        max_api_calls = (total_limit // API_MAX_LIMIT_PER_CALL) + 5 if total_limit and not start_time_ms else 20 # If fetching by limit, estimate calls. If by date, allow more.
 
         for call_num in range(max_api_calls):
-            if not start_time_ms and klines_fetched_so_far >= total_limit:
+            if not start_time_ms and total_limit > 0 and klines_fetched_so_far >= total_limit:
                 logger.debug(f"[{symbol}] Fetched desired total_limit of {total_limit} candles.")
                 break
-            remaining_to_fetch = total_limit - klines_fetched_so_far
+            remaining_to_fetch = total_limit - klines_fetched_so_far if total_limit > 0 else API_MAX_LIMIT_PER_CALL
             current_chunk_api_limit = min(API_MAX_LIMIT_PER_CALL, remaining_to_fetch if not start_time_ms and remaining_to_fetch > 0 else API_MAX_LIMIT_PER_CALL)
-            if current_chunk_api_limit <= 0 and not start_time_ms : 
+            if current_chunk_api_limit <= 0 and not start_time_ms and total_limit > 0: 
                  break
 
             time.sleep(self.rate_limit_delay)
@@ -242,8 +268,10 @@ class BitgetAPI:
             max_chunk_retries = 3 
             for attempt in range(max_chunk_retries):
                 headers = self._get_headers("GET", request_path)
+                log_req_headers = {k: (f"{v[:4]}...{v[-4:]}" if "SIGN" in k.upper() or "KEY" in k.upper() else v) for k,v in headers.items() if self.api_key}
+
+                logger.debug(f"[{symbol}] Fetching chunk {call_num+1} (API att {attempt+1}): Limit={current_chunk_api_limit}, Before={current_call_end_time_ms}, Headers={log_req_headers if self.api_key else 'Public / No Auth Headers'}")
                 try:
-                    logger.debug(f"[{symbol}] Fetching chunk {call_num+1} (API attempt {attempt+1}): Limit={current_chunk_api_limit}, Before={current_call_end_time_ms}")
                     resp = self.session.get(f"{self.base_url}{request_path}", params=params_chunk, headers=headers, timeout=20)
                     logger.debug(f"[{symbol}] Chunk API Resp: {resp.status_code}, Text: {resp.text[:150]}")
                     resp.raise_for_status()
@@ -287,7 +315,7 @@ class BitgetAPI:
                 logger.debug(f"[{symbol}] Oldest data in chunk ({oldest_ts_in_chunk_ms}) passed specified start_time_ms ({start_time_ms}). Stopping fetch.")
                 break 
             current_call_end_time_ms = oldest_ts_in_chunk_ms 
-            if not start_time_ms and klines_fetched_so_far >= total_limit:
+            if not start_time_ms and total_limit > 0 and klines_fetched_so_far >= total_limit:
                 logger.debug(f"[{symbol}] Fetched required total_limit of {total_limit} candles. Stopping.")
                 break
         
@@ -301,11 +329,11 @@ class BitgetAPI:
         final_df = final_df[~final_df.index.duplicated(keep='first')] 
         final_df.sort_index(inplace=True) 
 
-        if start_time_ms: 
-            final_df = final_df[final_df.index >= pd.to_datetime(start_time_ms, unit='ms', utc=True)]
-        if end_time_ms: 
-            final_df = final_df[final_df.index < pd.to_datetime(end_time_ms, unit='ms', utc=True)] 
-        if total_limit > 0 and not (start_time_ms or end_time_ms):
+        # Final filtering based on requested date range or limit
+        if start_time_ms: final_df = final_df[final_df.index >= pd.to_datetime(start_time_ms, unit='ms', utc=True)]
+        if end_time_ms: final_df = final_df[final_df.index < pd.to_datetime(end_time_ms, unit='ms', utc=True)] 
+        
+        if total_limit > 0 and not (start_time_ms or end_time_ms): # If fetching by total_limit from recent past
             final_df = final_df.tail(total_limit)
 
         logger.info(f"[{symbol}] Successfully fetched a total of {len(final_df)} klines after chunking & filtering.")
@@ -387,7 +415,7 @@ class DualNNFXSystem:
         else:
             start_ms, end_ms = (int(d.replace(tzinfo=timezone.utc).timestamp()*1000) if d and isinstance(d, datetime) else None for d in [date_from, date_to])
             kline_limit_to_use = cfg.get("backtest_kline_limit", 1000) 
-            df_k = self.api.get_klines(symbol,cfg.get("granularity","4H"), total_limit=kline_limit_to_use, start_time_ms=start_ms,end_time_ms=end_ms) # Pass total_limit
+            df_k = self.api.get_klines(symbol,cfg.get("granularity","4H"), total_limit=kline_limit_to_use, start_time_ms=start_ms,end_time_ms=end_ms) 
         
         min_klines_len = cfg.get("backtest_min_data_after_get_klines",100)
         if df_k.empty or len(df_k) < min_klines_len: 
@@ -547,69 +575,239 @@ class DualNNFXSystem:
                   (min(nt*0.1,10) * cfg_s.get("total_trades_factor_weight",0.05)) )
         return round(max(score,-1000.0),2)
 
+# --- Paper Trading Globals & Functions ---
+PAPER_TRADING_STATE_FILE = Path("results/paper_trading_state.json")
+PAPER_TRADE_LOG_FILE = Path("results/paper_trading_log.csv")
+
+def load_paper_trading_state() -> Dict:
+    if PAPER_TRADING_STATE_FILE.exists():
+        try:
+            with open(PAPER_TRADING_STATE_FILE, 'r') as f:
+                state = json.load(f)
+                if state.get("current_position") and state["current_position"].get("entry_time"):
+                    try: state["current_position"]["entry_time"] = pd.to_datetime(state["current_position"]["entry_time"])
+                    except: state["current_position"]["entry_time"] = None # Invalid date string
+                if state.get("last_processed_candle_ts"):
+                    try: state["last_processed_candle_ts"] = pd.to_datetime(state["last_processed_candle_ts"])
+                    except: state["last_processed_candle_ts"] = None
+                return state
+        except Exception as e:
+            logger.error(f"Error loading paper trading state from {PAPER_TRADING_STATE_FILE}: {e}. Starting fresh.")
+    # Default initial state
+    return {
+        "current_paper_equity": strategy_config_global.get("paper_trading.initial_equity", 10000),
+        "current_position": None, 
+        "last_processed_candle_ts": None 
+    }
+
+def save_paper_trading_state(state: Dict):
+    try:
+        state_to_save = state.copy() # Work on a copy
+        if state_to_save.get("current_position") and isinstance(state_to_save["current_position"].get("entry_time"), pd.Timestamp):
+            state_to_save["current_position"]["entry_time"] = state_to_save["current_position"]["entry_time"].isoformat()
+        if isinstance(state_to_save.get("last_processed_candle_ts"), pd.Timestamp):
+            state_to_save["last_processed_candle_ts"] = state_to_save["last_processed_candle_ts"].isoformat()
+            
+        temp_file = PAPER_TRADING_STATE_FILE.with_suffix(".tmp")
+        with open(temp_file, 'w') as f:
+            json.dump(state_to_save, f, indent=4)
+        os.replace(temp_file, PAPER_TRADING_STATE_FILE) # Atomic replace
+        logger.debug("Paper trading state saved.")
+    except Exception as e:
+        logger.error(f"Error saving paper trading state to {PAPER_TRADING_STATE_FILE}: {e}")
+
+def log_paper_trade(trade_details: Dict):
+    log_df = pd.DataFrame([trade_details])
+    file_exists = PAPER_TRADE_LOG_FILE.exists()
+    try:
+        log_df.to_csv(PAPER_TRADE_LOG_FILE, mode='a', header=not file_exists, index=False)
+        logger.info(f"PAPER TRADE CLOSED: {trade_details.get('type')} {trade_details.get('symbol')} exited at {trade_details.get('exit_price',0):.4f}. PnL $: {trade_details.get('pnl_dollar',0):.2f}. Reason: {trade_details.get('exit_reason')}")
+    except Exception as e:
+        logger.error(f"Error logging paper trade to {PAPER_TRADE_LOG_FILE}: {e}")
+
+def run_paper_trader(api_config_dict: Dict, base_strategy_config: StrategyConfig):
+    logger_paper = logging.getLogger("PaperTrader") # Specific logger
+    logger_paper.info("--- Starting Paper Trading Mode ---")
+
+    # Use parameters from base_strategy_config. This should be updated with Optuna's best params by the user.
+    current_config = base_strategy_config 
+    pt_config = current_config.get("paper_trading", {}) # Get the paper_trading sub-dictionary
+
+    api = BitgetAPI(**api_config_dict)
+    system = DualNNFXSystem(api, current_config) 
+    
+    state = load_paper_trading_state()
+    
+    symbol = current_config.get("symbol", "SOLUSDT")
+    granularity_str_pt = current_config.get("granularity", "4H")
+    
+    # Convert granularity like "4H" to timedelta for candle progression logic
+    granularity_val = int(''.join(filter(str.isdigit, granularity_str_pt))) if granularity_str_pt[:-1].isdigit() else 4
+    granularity_unit = granularity_str_pt[-1].lower()
+    if granularity_unit == 'h': td_unit = 'hours'
+    elif granularity_unit == 'd': td_unit = 'days'
+    elif granularity_unit == 'm': td_unit = 'minutes' # Add minutes if needed
+    else: td_unit = 'hours'; logger_paper.warning(f"Unknown granularity unit '{granularity_unit}', defaulting to hours.")
+    granularity_timedelta = pd.Timedelta(**{td_unit: granularity_val})
+
+
+    check_interval_seconds = pt_config.get("check_interval_seconds", 300)
+    risk_per_trade_pt = current_config.get("risk_per_trade", 0.015) # These come from main config now
+    sl_atr_mult_pt = current_config.get("stop_loss_atr_multiplier", 2.0)
+    tp_atr_mult_pt = current_config.get("take_profit_atr_multiplier", 3.0)
+
+    logger_paper.info(f"Paper Trading for {symbol} every {check_interval_seconds}s. Initial Equity: {state['current_paper_equity']:.2f}")
+    if state["current_position"]: logger_paper.info(f"Resuming with existing position: {state['current_position']}")
+
+    while True: # Main paper trading loop
+        try:
+            logger_paper.debug(f"Fetching latest klines for {symbol}...")
+            kline_fetch_limit_pt = current_config.get("backtest_min_data_after_get_klines", 200) 
+            
+            # Fetch a bit more to ensure we have enough data for indicators on the latest closed candle
+            latest_klines_df = api.get_klines(symbol, granularity_str_pt, total_limit=kline_fetch_limit_pt + 50) # +50 buffer
+
+            if latest_klines_df.empty or len(latest_klines_df) < current_config.get("backtest_min_data_after_indicators", 50) + 2: # Need at least 2 for -2 index
+                logger_paper.warning(f"Not enough kline data fetched ({len(latest_klines_df)} candles). Retrying after interval.")
+                time.sleep(check_interval_seconds); continue
+
+            # Identify the latest fully closed candle (second to last)
+            # Ensure index is sorted; get_klines should return sorted data
+            latest_klines_df.sort_index(ascending=True, inplace=True)
+            closed_candle_data = latest_klines_df.iloc[-2] # Data of the latest closed candle
+            closed_candle_ts = closed_candle_data.name   # Timestamp of the latest closed candle
+
+            if state.get("last_processed_candle_ts") and closed_candle_ts <= pd.to_datetime(state["last_processed_candle_ts"]): # Ensure comparison with pd.Timestamp
+                logger_paper.debug(f"No new closed candle since {state['last_processed_candle_ts']}. Current closed: {closed_candle_ts}. Sleeping.")
+                time.sleep(check_interval_seconds); continue
+            
+            logger_paper.info(f"Processing new closed candle: {closed_candle_ts}")
+
+            # Use data up to and including this closed candle for indicator calculation
+            df_for_indicators_pt = latest_klines_df.loc[:closed_candle_ts].copy()
+            if len(df_for_indicators_pt) < current_config.get("backtest_min_data_after_indicators", 50):
+                 logger_paper.warning(f"Not enough hist. data ({len(df_for_indicators_pt)}) up to {closed_candle_ts} for inds. Sleeping.")
+                 state["last_processed_candle_ts"] = closed_candle_ts 
+                 save_paper_trading_state(state)
+                 time.sleep(check_interval_seconds); continue
+
+            df_indicators_pt = system.calculate_indicators(df_for_indicators_pt, symbol)
+            df_signals_pt = system.generate_signals(df_indicators_pt)
+            
+            if df_signals_pt.empty or closed_candle_ts not in df_signals_pt.index:
+                logger_paper.warning(f"Could not generate signals for candle {closed_candle_ts}. Ind data might be NaN.");
+                state["last_processed_candle_ts"] = closed_candle_ts
+                save_paper_trading_state(state); time.sleep(check_interval_seconds); continue
+
+            latest_signals_row = df_signals_pt.loc[closed_candle_ts] 
+
+            current_price_for_action_pt = latest_signals_row['close'] 
+            current_atr_pt = latest_signals_row.get('atr', np.nan)
+
+            # --- Position Management ---
+            if state["current_position"] is None: 
+                if latest_signals_row.get('long_signal', False) and pd.notna(current_atr_pt) and current_atr_pt > 1e-9:
+                    sl_val = current_price_for_action_pt - (sl_atr_mult_pt * current_atr_pt)
+                    tp_val = current_price_for_action_pt + (tp_atr_mult_pt * current_atr_pt)
+                    stop_dist_price_pt = sl_atr_mult_pt * current_atr_pt
+                    if stop_dist_price_pt > 1e-9:
+                        pos_size_pt = (state["current_paper_equity"] * risk_per_trade_pt) / stop_dist_price_pt
+                        state["current_position"] = {"symbol": symbol, "type": "long", "entry_price": current_price_for_action_pt,
+                                                 "entry_time": closed_candle_ts, "position_size": pos_size_pt,
+                                                 "stop_loss_price": sl_val, "take_profit_price": tp_val, "atr_at_entry": current_atr_pt}
+                        logger_paper.info(f"PAPER ENTRY (LONG): {symbol} @{current_price_for_action_pt:.4f}, Size:{pos_size_pt:.4f}, SL:{sl_val:.4f}, TP:{tp_val:.4f}")
+                    else: logger_paper.warning(f"[{symbol}] ATR too small for valid SL on LONG entry.")
+                elif latest_signals_row.get('short_signal', False) and pd.notna(current_atr_pt) and current_atr_pt > 1e-9:
+                    sl_val = current_price_for_action_pt + (sl_atr_mult_pt * current_atr_pt)
+                    tp_val = current_price_for_action_pt - (tp_atr_mult_pt * current_atr_pt)
+                    stop_dist_price_pt = sl_atr_mult_pt * current_atr_pt
+                    if stop_dist_price_pt > 1e-9:
+                        pos_size_pt = (state["current_paper_equity"] * risk_per_trade_pt) / stop_dist_price_pt
+                        state["current_position"] = {"symbol": symbol, "type": "short", "entry_price": current_price_for_action_pt,
+                                                 "entry_time": closed_candle_ts, "position_size": pos_size_pt,
+                                                 "stop_loss_price": sl_val, "take_profit_price": tp_val, "atr_at_entry": current_atr_pt}
+                        logger_paper.info(f"PAPER ENTRY (SHORT): {symbol} @{current_price_for_action_pt:.4f}, Size:{pos_size_pt:.4f}, SL:{sl_val:.4f}, TP:{tp_val:.4f}")
+                    else: logger_paper.warning(f"[{symbol}] ATR too small for valid SL on SHORT entry.")
+
+            elif state["current_position"] is not None: 
+                pos_pt = state["current_position"]
+                exit_trade_pt, exit_reason_pt = False, ""
+                if pos_pt["type"] == "long":
+                    if current_price_for_action_pt <= pos_pt["stop_loss_price"]: exit_trade_pt, exit_reason_pt = True, "Stop Loss"
+                    elif current_price_for_action_pt >= pos_pt["take_profit_price"]: exit_trade_pt, exit_reason_pt = True, "Take Profit"
+                    elif latest_signals_row.get('long_exit', False): exit_trade_pt, exit_reason_pt = True, "Strategy Exit Signal"
+                elif pos_pt["type"] == "short":
+                    if current_price_for_action_pt >= pos_pt["stop_loss_price"]: exit_trade_pt, exit_reason_pt = True, "Stop Loss"
+                    elif current_price_for_action_pt <= pos_pt["take_profit_price"]: exit_trade_pt, exit_reason_pt = True, "Take Profit"
+                    elif latest_signals_row.get('short_exit', False): exit_trade_pt, exit_reason_pt = True, "Strategy Exit Signal"
+
+                if exit_trade_pt:
+                    pnl_pips_val = (current_price_for_action_pt - pos_pt['entry_price']) if pos_pt['type'] == 'long' else (pos_pt['entry_price'] - current_price_for_action_pt)
+                    pnl_dollar_val = pnl_pips_val * pos_pt['position_size']
+                    state["current_paper_equity"] += pnl_dollar_val
+                    
+                    trade_log_entry_details = {
+                        "symbol": pos_pt["symbol"], "type": pos_pt["type"], "entry_time": pos_pt["entry_time"].isoformat(), 
+                        "exit_time": closed_candle_ts.isoformat(), "entry_price": pos_pt["entry_price"], 
+                        "exit_price": current_price_for_action_pt, "pnl_dollar": pnl_dollar_val, 
+                        "exit_reason": exit_reason_pt, "equity_after_trade": state["current_paper_equity"], 
+                        "position_size": pos_pt["position_size"]
+                    }
+                    log_paper_trade(trade_log_entry_details)
+                    state["current_position"] = None
+            
+            state["last_processed_candle_ts"] = closed_candle_ts
+            save_paper_trading_state(state) 
+
+        except requests.exceptions.RequestException as e_api_pt:
+            logger_paper.error(f"API Request Exception during paper trading loop: {e_api_pt}")
+        except Exception as e_loop_pt:
+            logger_paper.error(f"Unhandled exception in paper trading loop: {e_loop_pt}", exc_info=True)
+        
+        logger_paper.debug(f"Loop finished. Current paper equity: {state.get('current_paper_equity', 'N/A'):.2f}. Sleeping for {check_interval_seconds}s.")
+        time.sleep(check_interval_seconds)
+
+
 # --- Optuna Objective & Walk-Forward ---
 def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_config_instance: StrategyConfig) -> float: 
     logger_opt = logging.getLogger("OptunaObjective"); 
     logger_opt.info(f"Trial {trial.number} starting...") 
-    opt_ranges = base_config_instance.get("optuna_parameter_ranges", {}) # Ranges from solusdt_strategy_base.json
+    opt_ranges = base_config_instance.get("optuna_parameter_ranges", {})
     
     trial_params_override = {"indicators": {}} 
     
-    # This map translates keys from your JSON's "optuna_parameter_ranges"
-    # to the (config_section_in_StrategyConfig, key_in_that_section) used by your strategy code.
-    # ***** ENSURE THIS MAP IS COMPLETE AND ACCURATE FOR YOUR JSON OPTUNA KEYS *****
+    # Map from keys in your JSON's optuna_parameter_ranges to actual config structure
+    # This map MUST be accurate for your JSON structure.
     parameter_key_map_to_config = { 
-        "tema_length": ("indicators", "tema_period"),
-        "cci_length": ("indicators", "cci_period"),
-        "efi_length": ("indicators", "elder_fi_period"), 
-        "kijun_sen_length": ("indicators", "kijun_sen_period"),
-        "williams_r_length": ("indicators", "williams_r_period"), 
-        "cmf_length": ("indicators", "cmf_window"), # JSON uses 'cmf_length', code uses 'cmf_window'
-        "williams_r_threshold_opt": ("indicators", "williams_r_threshold"), # JSON uses '_opt' suffix
-        
+        "tema_length": ("indicators", "tema_period"), "cci_length": ("indicators", "cci_period"),
+        "efi_length": ("indicators", "elder_fi_period"), "kijun_sen_length": ("indicators", "kijun_sen_period"),
+        "williams_r_length": ("indicators", "williams_r_period"), "cmf_length": ("indicators", "cmf_window"),
+        "williams_r_threshold_opt": ("indicators", "williams_r_threshold"),
         "stop_loss_atr_multiplier_opt": (None, "stop_loss_atr_multiplier"),
         "take_profit_atr_multiplier_opt": (None, "take_profit_atr_multiplier"),
         "risk_per_trade_opt": (None, "risk_per_trade")
     }
     
     for optuna_json_key, range_info_dict in opt_ranges.items():
-        if not (isinstance(range_info_dict, dict) and 
-                all(k in range_info_dict for k in ['min', 'max', 'step'])):
-            logger_opt.error(f"Trial {trial.number}: Malformed range for '{optuna_json_key}' in config: {range_info_dict}. Using default fallback or skipping.")
-            default_fallback_range_dict = default_config_for_fallback.get("optuna_parameter_ranges", {}).get(optuna_json_key)
-            if isinstance(default_fallback_range_dict, dict) and all(k in default_fallback_range_dict for k in ['min', 'max', 'step']):
-                range_info_dict = default_fallback_range_dict
-                logger_opt.warning(f"Trial {trial.number}: Using hardcoded default fallback range dict for '{optuna_json_key}': {range_info_dict}")
-            else:
-                logger_opt.error(f"Trial {trial.number}: Cannot find valid range for '{optuna_json_key}' even in fallback. Skipping this param for Optuna.")
-                continue 
+        if not (isinstance(range_info_dict, dict) and all(k in range_info_dict for k in ['min', 'max', 'step'])):
+            logger_opt.error(f"Trial {trial.number}: Malformed range for '{optuna_json_key}' in config: {range_info_dict}. Skipping.")
+            continue
         
         min_val, max_val, step_val = range_info_dict['min'], range_info_dict['max'], range_info_dict['step']
-        
-        is_float_suggestion = isinstance(min_val, float) or isinstance(max_val, float) or \
-                              (step_val is not None and isinstance(step_val, float))
-        
+        is_float_suggestion = isinstance(min_val, float) or isinstance(max_val, float) or (step_val is not None and isinstance(step_val, float))
         is_period_like = "length" in optuna_json_key or "period" in optuna_json_key or "window" in optuna_json_key
         if not is_float_suggestion and is_period_like and min_val < 2:
-            min_val = max(2, int(min_val)) 
+            min_val = max(2, int(min_val)); 
             if max_val < min_val: max_val = min_val
         
-        suggested_value = None
-        if is_float_suggestion:
-            suggested_value = trial.suggest_float(optuna_json_key, min_val, max_val, step=step_val)
-        else: 
-            current_step = int(step_val) if step_val is not None and step_val >=1 else 1 
-            suggested_value = trial.suggest_int(optuna_json_key, int(min_val), int(max_val), step=current_step)
+        suggested_value = trial.suggest_float(optuna_json_key,min_val,max_val,step=step_val) if is_float_suggestion \
+            else trial.suggest_int(optuna_json_key,int(min_val),int(max_val),step=int(step_val) if step_val is not None and step_val >=1 else 1)
 
         if optuna_json_key in parameter_key_map_to_config:
             section, actual_config_key = parameter_key_map_to_config[optuna_json_key]
-            if section == "indicators":
-                trial_params_override["indicators"][actual_config_key] = suggested_value
-            elif section is None: 
-                trial_params_override[actual_config_key] = suggested_value
-        else:
-            logger_opt.warning(f"Optuna Trial {trial.number}: Key '{optuna_json_key}' from JSON optuna_parameter_ranges "
-                               f"is NOT defined in 'parameter_key_map_to_config'. Parameter will not be applied correctly.")
+            if section == "indicators": trial_params_override["indicators"][actual_config_key] = suggested_value
+            elif section is None: trial_params_override[actual_config_key] = suggested_value
+        else: logger_opt.warning(f"Optuna Trial {trial.number}: Key '{optuna_json_key}' not in map. Not applied.")
     
     logger_opt.debug(f"Trial {trial.number}: Constructed trial_params_override: {trial_params_override}")
     
@@ -620,7 +818,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     
     res = system_trial.backtest_pair(symbol=symbol_to_opt) 
     if 'error' in res and res['error']!='No trades': 
-        logger_opt.warning(f"Trial {trial.number} for {symbol_to_opt} error: {res['error']}. Optuna Params: {trial.params}, Constructed Params for trial: {trial_params_override}")
+        logger_opt.warning(f"Trial {trial.number} for {symbol_to_opt} error: {res['error']}. Optuna Params: {trial.params}, Constructed: {trial_params_override}")
         return -1e9 
     
     score = system_trial._calculate_score(res) 
@@ -628,7 +826,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     return float(score)
 
 def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api_config_dict: Dict, base_config_for_wfa: StrategyConfig):
-    # ... (Walk-forward analysis function - same as previous full version) ...
+    # ... (WFA logic as provided previously, no changes needed here based on the error) ...
     logger_wfa = logging.getLogger("WalkForward")
     wfa_cfg = base_config_for_wfa.get("walk_forward", {})
     if not wfa_cfg.get("enabled", False): logger_wfa.info(f"WFA for {symbol} disabled. Skipping."); return

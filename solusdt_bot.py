@@ -538,7 +538,7 @@ if __name__ == "__main__":
         
         # strategy_config_global is already initialized at module level
         logger.info(f"SOLUSDT NNFX Bot Run ID: {ts_run}")
-        logger.info(f"Using Base Strategy Config: {strategy_config_global.config_path}")
+        logger.info(f"Using Base Strategy Config: {BASE_CONFIG_PATH}")
 
         api_cfg = {}; path_api=Path("config/api_config.json")
         if path_api.exists():

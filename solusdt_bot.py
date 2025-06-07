@@ -363,24 +363,62 @@ class DualNNFXSystem:
                 'var_95_r':np.percentile(df_t.pnl_r,5) if n_tr>0 else 0.0, 'max_loss_r':df_t.pnl_r.min() if n_tr>0 else 0.0,
                 'final_equity':equity,'trades':df_t.to_dict('records'),'equity_curve':eq_hist}
 
-    def _calc_mcl(self,df_t): c,mc=0,0; for r in df_t['pnl_r']: c=c+1 if r<0 else 0; mc=max(mc,c); return mc
-    def _calc_mdd(self,eq_h):
-        if not eq_h: return 0.0; eq_s=pd.Series([p['equity'] for p in eq_h]); pk=eq_s.expanding(1).max().replace(0,np.nan)
-        dd_min=((eq_s-pk)/pk).min(); return abs(dd_min*100.0) if pd.notna(dd_min) else 0.0
-    def _calc_ann_factor(self,df_t,eq_h):
-        if df_t.empty or len(df_t)<2 or not eq_h or len(eq_h)<2: return 1.0
-        st,et=(pd.to_datetime(d[0]['timestamp' if i==0 else 'timestamp']).tz_localize(None) for i,d in enumerate([eq_h,eq_h[-1:]]))
-        dur_d=max(1.0,(et-st).total_seconds()/(24*3600.0)); tpy=(len(df_t)/dur_d)*252.0; return np.sqrt(tpy) if tpy>0 else 1.0
-    def _calc_sharpe(self,df_t,eq_h):
-        if df_t.empty or df_t['pnl_r'].isnull().all() or len(df_t['pnl_r'].dropna())<2: return 0.0
-        ret=df_t.pnl_r.dropna();mr,sr=ret.mean(),ret.std();if sr==0 or pd.isna(sr):return np.inf if mr>0 else(0.0 if mr==0 else -np.inf)
-        return (mr/sr)*self._calc_ann_factor(df_t,eq_h)
-    def _calc_sortino(self,df_t,eq_h,target_r=0.0):
-        if df_t.empty or df_t['pnl_r'].isnull().all() or len(df_t['pnl_r'].dropna())<2: return 0.0
-        ret=df_t.pnl_r.dropna();mr=ret.mean();down_dev_sq=(target_r-ret[ret<target_r])**2
-        if down_dev_sq.empty:return np.inf if mr>target_r else 0.0
-        exp_ddr=np.sqrt(down_dev_sq.mean());if exp_ddr==0 or pd.isna(exp_ddr):return np.inf if mr>target_r else 0.0
-        return ((mr-target_r)/exp_ddr)*self._calc_ann_factor(df_t,eq_h)
+    def _calc_mcl(self, df_t):
+        c, mc = 0, 0
+        for r in df_t['pnl_r']:
+            if r < 0:
+                c += 1
+            else:
+                c = 0
+            mc = max(mc, c)
+        return mc
+    def _calc_mdd(self, eq_h):
+        if not eq_h:
+            return 0.0
+        eq_s = pd.Series([p['equity'] for p in eq_h])
+        pk = eq_s.expanding(1).max().replace(0, np.nan)
+        dd_min = ((eq_s - pk) / pk).min()
+        return abs(dd_min * 100.0) if pd.notna(dd_min) else 0.0
+    def _calc_ann_factor(self, df_t, eq_h):
+        if df_t.empty or len(df_t) < 2 or not eq_h or len(eq_h) < 2:
+            return 1.0
+        st = pd.to_datetime(eq_h[0]['timestamp']).tz_localize(None)
+        et = pd.to_datetime(eq_h[-1]['timestamp']).tz_localize(None)
+        dur_d = max(1.0, (et - st).total_seconds() / (24 * 3600.0))
+        tpy = (len(df_t) / dur_d) * 252.0
+        return np.sqrt(tpy) if tpy > 0 else 1.0
+    def _calc_sharpe(self, df_t, eq_h):
+        if df_t.empty or df_t['pnl_r'].isnull().all() or len(df_t['pnl_r'].dropna()) < 2:
+            return 0.0
+        ret = df_t.pnl_r.dropna()
+        mr = ret.mean()
+        sr = ret.std()
+        if sr == 0 or pd.isna(sr):
+            if mr > 0:
+                return np.inf
+            elif mr == 0:
+                return 0.0
+            else:
+                return -np.inf
+        return (mr / sr) * self._calc_ann_factor(df_t, eq_h)
+    def _calc_sortino(self, df_t, eq_h, target_r=0.0):
+        if df_t.empty or df_t['pnl_r'].isnull().all() or len(df_t['pnl_r'].dropna()) < 2:
+            return 0.0
+        ret = df_t.pnl_r.dropna()
+        mr = ret.mean()
+        down_dev_sq = (target_r - ret[ret < target_r]) ** 2
+        if down_dev_sq.empty:
+            if mr > target_r:
+                return np.inf
+            else:
+                return 0.0
+        exp_ddr = np.sqrt(down_dev_sq.mean())
+        if exp_ddr == 0 or pd.isna(exp_ddr):
+            if mr > target_r:
+                return np.inf
+            else:
+                return 0.0
+        return ((mr - target_r) / exp_ddr) * self._calc_ann_factor(df_t, eq_h)
 
     def _calculate_score(self, result_dict: Dict) -> float: 
         cfg_s = self.config.get("scoring_weights",{}); cfg_p = self.config.get("scoring",{})
@@ -415,7 +453,7 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     ind_p["williams_r_threshold"]=trial.suggest_int("williams_r_threshold",*_get_r("williams_r_threshold",[-70,-30,5]))
     
     trial_params["stop_loss_atr_multiplier"]=trial.suggest_float("sl_atr_mult",*_get_r("stop_loss_atr_multiplier",[1.5,3.5,0.1]))
-    trial_params["take_profit_atr_multiplier"]=trial.suggest_float("tp_atr_mult",*_get_r("take_profit_atr_multiplier",[1.5,5.0,0.1]))
+    trial_params["take_profit_atr_multiplier"]=trial.suggest_float("tp_atr_mult",*_get_r("take_profit_atr_mult",[1.5,5.0,0.1]))
     trial_params["risk_per_trade"]=trial.suggest_float("risk_per_trade",*_get_r("risk_per_trade",[0.005,0.025,0.001]))
 
     # Create a new config instance for this trial, merging with base

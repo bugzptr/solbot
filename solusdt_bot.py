@@ -24,54 +24,50 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 # Configure logging
 if not logging.getLogger().handlers: 
     logging.basicConfig(
-        level=logging.INFO, # INFO for general, DEBUG for dev
+        level=logging.INFO, 
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[logging.StreamHandler(sys.stdout)] 
     )
-logger = logging.getLogger("SOLUSDT_NNFX_Bot") # Logger for this specific bot/script
+logger = logging.getLogger("SOLUSDT_NNFX_Bot")
 
 BASE_CONFIG_PATH = Path("config/solusdt_strategy_base.json")
 API_CONFIG_PATH = Path("config/api_config.json")
 
 # --- Default Configuration (Fallback) ---
 default_config_for_fallback = {
-    "major_bases_for_filtering": ["BTC", "ETH", "SOL", "AVAX", "LINK", "ADA", "DOT", "MATIC", "BNB", "XRP", "DOGE", "TRX", "LTC"], # Not used in single-asset bot
-    "filter_by_major_bases_for_top_volume": True, # Not used
-    "top_n_pairs_by_volume_to_scan": 1, # Not used
-    "symbol": "SOLUSDT", # Specific to this bot
+    "symbol": "SOLUSDT", 
     "granularity": "4H",
     "backtest_kline_limit": 1500, 
     "backtest_min_data_after_get_klines": 200,
     "backtest_min_data_after_indicators": 100,
-    "backtest_min_trades_for_ranking": 3, # Used by Optuna if checking trades
+    "backtest_min_trades_for_ranking": 3,
     "risk_per_trade": 0.015,
     "stop_loss_atr_multiplier": 2.0,
     "take_profit_atr_multiplier": 3.0,
     "indicators": { 
-        "tema_period": 21, 
-        "cci_period": 14, 
-        "elder_fi_period": 13,
+        "tema_period": 21, "cci_period": 14, "elder_fi_period": 13,
         "chandelier_period": 22, "chandelier_multiplier": 3.0,
-        "kijun_sen_period": 26, 
-        "williams_r_period": 14, "williams_r_threshold": -50,
+        "kijun_sen_period": 26, "williams_r_period": 14, "williams_r_threshold": -50,
         "cmf_window": 20, 
         "psar_step": 0.02, "psar_max_step": 0.2,
         "atr_period_risk": 14, "atr_period_chandelier": 22
     },
-    "scoring_weights": { # Used by _calculate_score, which Optuna uses
+    "scoring_weights": { 
         "win_rate_weight": 0.20, "profit_factor_weight": 0.25, "total_return_pct_weight": 0.20,
         "sharpe_ratio_weight": 0.25, "max_drawdown_pct_penalty_weight": 0.05, 
         "total_trades_factor_weight": 0.05 
     },
-    "optuna_parameter_ranges": { # For Optuna suggestions
-        "tema_period": [15, 40, 1], "cci_period": [10, 30, 1],
-        "kijun_sen_period": [20, 52, 2], "cmf_window": [14, 30, 1],
-        "williams_r_threshold": [-70, -30, 5],
-        "stop_loss_atr_multiplier": [1.5, 3.5, 0.1],
-        "take_profit_atr_multiplier": [1.5, 5.0, 0.1],
-        "risk_per_trade": [0.005, 0.025, 0.001]
+    "optuna_parameter_ranges": { 
+        "tema_period": {"min": 15, "max": 40, "step": 1}, # Changed to dict structure
+        "cci_period": {"min": 10, "max": 30, "step": 1},
+        "kijun_sen_period": {"min": 20, "max": 52, "step": 2},
+        "cmf_window": {"min": 14, "max": 30, "step": 1},
+        "williams_r_threshold": {"min": -70, "max": -30, "step": 5},
+        "stop_loss_atr_multiplier": {"min": 1.5, "max": 3.5, "step": 0.1}, # Top-level
+        "take_profit_atr_multiplier": {"min": 1.5, "max": 5.0, "step": 0.1}, # Top-level
+        "risk_per_trade": {"min": 0.005, "max": 0.025, "step": 0.001} # Top-level
     },
-    "walk_forward": { # Settings for Walk-Forward Analysis
+    "walk_forward": { 
         "enabled": False, "full_data_start_date": "2021-01-01", 
         "num_oos_periods": 4, "oos_period_days": 90, 
         "is_period_days_multiple_of_oos": 3 
@@ -82,11 +78,10 @@ default_config_for_fallback = {
 # --- Configuration Class ---
 class StrategyConfig: 
     def __init__(self, params_override: Optional[Dict[str, Any]] = None):
-        self.config_path = BASE_CONFIG_PATH # Store the global path it intends to use
-        self.params = self._load_base_config() # _load_base_config will use self.config_path
+        self.config_path = BASE_CONFIG_PATH 
+        self.params = self._load_base_config() 
         if params_override:
             self._deep_update(self.params, params_override)
-        # logger.debug("StrategyConfig initialized.")
 
     def _load_base_config(self) -> Dict[str, Any]:
         current_logger_cfg = logging.getLogger("SOLUSDT_NNFX_Bot.Config") 
@@ -94,11 +89,9 @@ class StrategyConfig:
             can_log_properly = current_logger_cfg.hasHandlers() and \
                                any(isinstance(h, logging.StreamHandler) and 
                                    h.stream in [sys.stdout, sys.stderr] for h in current_logger_cfg.handlers)
-
             log_msg_not_found = f"Base strategy config file not found: {self.config_path}. Using hardcoded fallback defaults."
             if can_log_properly: current_logger_cfg.warning(log_msg_not_found)
             else: print(f"PRINT WARNING: {log_msg_not_found}", file=sys.stderr)
-            
             try:
                 self.config_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.config_path, "w") as f_cfg: json.dump(default_config_for_fallback, f_cfg, indent=4)
@@ -143,7 +136,7 @@ class StrategyConfig:
 
 strategy_config_global = StrategyConfig()
 
-class BitgetAPI: 
+class BitgetAPI: # No changes needed
     def __init__(self):
         self.api_key = ""
         self.secret_key = ""
@@ -249,7 +242,7 @@ class BitgetAPI:
         logger.error(f"[{symbol}] Failed to fetch klines after {max_r} attempts.")
         return df_out
 
-class NNFXIndicators: 
+class NNFXIndicators: # No changes needed
     def __init__(self, config: StrategyConfig): self.config_params = config.get("indicators", {})
     def _get_param(self, key: str, default: Any) -> Any: return self.config_params.get(key, default)
     def tema(self, data: pd.Series) -> pd.Series:
@@ -271,9 +264,10 @@ class NNFXIndicators:
     def parabolic_sar(self,high:pd.Series,low:pd.Series,close:pd.Series)->pd.Series: return ta.trend.PSARIndicator(high,low,close,self._get_param("psar_step",.02),self._get_param("psar_max_step",.2),fillna=False).psar()
     def atr(self,high:pd.Series,low:pd.Series,close:pd.Series,period:Optional[int]=None)->pd.Series: return ta.volatility.AverageTrueRange(high,low,close,period if period is not None else self._get_param("atr_period_risk",14),fillna=False).average_true_range()
 
-class DualNNFXSystem: 
+class DualNNFXSystem: # No changes needed to methods, just ensure constructor receives proper StrategyConfig
     def __init__(self, api: BitgetAPI, config: StrategyConfig):
         self.api = api; self.config = config; self.ind = NNFXIndicators(config)
+
     def _safe_calc(self,idx,name,func,*args): 
         try: return func(*args)
         except Exception as e: 
@@ -295,6 +289,7 @@ class DualNNFXSystem:
         cmf,dum_sig=self._safe_calc(idx,f"[{s}]CMF",i.klinger_oscillator,d['high'],d['low'],d['close'],d['volume']); d['klinger'],d['klinger_signal']=cmf,dum_sig
         d['psar']=self._safe_calc(idx,f"[{s}]PSAR",i.parabolic_sar,d['high'],d['low'],d['close']); d['atr']=self._safe_calc(idx,f"[{s}]ATR",i.atr,d['high'],d['low'],d['close'])
         return d
+
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame: 
         df=data.copy();ind_cols=['tema','cci','elder_fi','kijun_sen','williams_r','klinger','chandelier_long','chandelier_short','psar'];[df.setdefault(c,np.nan) for c in ind_cols if c not in df]
         df['s_a_base']=np.select([df['close']>df['tema'],df['close']<df['tema']],[1,-1],0); df['s_a_conf']=np.select([df['cci']>0,df['cci']<0],[1,-1],0)
@@ -355,9 +350,9 @@ class DualNNFXSystem:
                     long_sig_val = r.get('long_signal', False)
                     short_sig_val = r.get('short_signal', False)
 
-                    if r.get('long_signal',False) and position_size_calculated > 0: # CORRECTED
+                    if r.get('long_signal',False) and position_size_calculated > 0: 
                         pos={'type':'long','entry_price':price,'entry_time':r.name,'sl':price-stop_distance_price,'tp':price+tp_m*atr_v,'atr0':atr_v,'size':position_size_calculated}
-                    elif r.get('short_signal',False) and position_size_calculated > 0: # CORRECTED
+                    elif r.get('short_signal',False) and position_size_calculated > 0: 
                         pos={'type':'short','entry_price':price,'entry_time':r.name,'sl':price+stop_distance_price,'tp':price-tp_m*atr_v,'atr0':atr_v,'size':position_size_calculated}
             elif pos:
                 exit_now,exit_reason=False,""
@@ -486,32 +481,46 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     logger_opt.info(f"Trial {trial.number} starting...") 
     opt_ranges = base_config_instance.get("optuna_parameter_ranges", {})
     
-    trial_params_override = {"indicators": {}} 
+    trial_params_override = {"indicators": {}} # Initialize nested dict for indicators
     
-    def _get_opt_range_def(key, default_range_tuple):
-        r = opt_ranges.get(key)
-        return r if r and len(r) == 3 else default_range_tuple
+    # Iterate over the parameter names that are defined for optimization in the base_config_instance
+    for param_name_key, range_info_dict in opt_ranges.items():
+        optuna_key_name = param_name_key # Use the key from config directly for Optuna's trial.params
 
-    ind_p = trial_params_override["indicators"]
-    # Suggesting parameters for indicators
-    # Ensure default_config_for_fallback["optuna_parameter_ranges"] is used if base_config_instance doesn't have some keys
-    # Or better, ensure base_config_instance.get("optuna_parameter_ranges") provides all necessary keys.
-    # The current _get_opt_range_def uses opt_ranges from the passed base_config_instance.
-    
-    # Iterate over the defined optimizable parameters in the base config
-    for ind_param_name in base_config_instance.get("optuna_parameter_ranges", {}).keys():
-        default_range = default_config_for_fallback["optuna_parameter_ranges"].get(ind_param_name, [0,1,1]) # Fallback range
-        current_range = _get_opt_range_def(ind_param_name, default_range)
-        optuna_key = ind_param_name 
+        if not (isinstance(range_info_dict, dict) and 
+                all(k in range_info_dict for k in ['min', 'max', 'step'])):
+            logger_opt.error(f"Trial {trial.number}: Malformed range for '{param_name_key}' in config: {range_info_dict}. Skipping this param.")
+            # Try to get from default_config_for_fallback as a last resort (ensure it's also dict)
+            default_fallback_range_dict = default_config_for_fallback.get("optuna_parameter_ranges", {}).get(param_name_key)
+            if isinstance(default_fallback_range_dict, dict) and all(k in default_fallback_range_dict for k in ['min', 'max', 'step']):
+                range_info_dict = default_fallback_range_dict
+                logger_opt.warning(f"Trial {trial.number}: Using hardcoded default fallback range dict for '{param_name_key}': {range_info_dict}")
+            else:
+                continue # Skip this parameter if no valid range can be found
         
-        if ind_param_name in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
-            trial_params_override[ind_param_name] = trial.suggest_float(optuna_key, current_range[0], current_range[1], step=current_range[2])
-        else: # Assumed to be an indicator param
-            if isinstance(current_range[0], float) or isinstance(current_range[1], float) or \
-               (current_range[2] is not None and isinstance(current_range[2], float)):
-                 ind_p[ind_param_name] = trial.suggest_float(optuna_key, current_range[0], current_range[1], step=current_range[2])
-            else: 
-                 ind_p[ind_param_name] = trial.suggest_int(optuna_key, current_range[0], current_range[1], step=current_range[2])
+        min_val, max_val, step_val = range_info_dict['min'], range_info_dict['max'], range_info_dict['step']
+        
+        suggested_value = None
+        # Determine if param is float or int based on types in range_info_dict or step_val
+        is_float_param = isinstance(min_val, float) or isinstance(max_val, float) or \
+                         (step_val is not None and isinstance(step_val, float))
+
+        if is_float_param:
+            suggested_value = trial.suggest_float(optuna_key_name, min_val, max_val, step=step_val)
+        else: 
+            suggested_value = trial.suggest_int(optuna_key_name, min_val, max_val, step=int(step_val) if step_val is not None else 1)
+
+
+        # Map Optuna suggested param name to the correct location in trial_params_override
+        # (This assumes optuna_parameter_ranges keys directly map or are handled by StrategyConfig's structure)
+        # For indicator params like "tema_period", they need to go into trial_params_override["indicators"]
+        # For top-level params like "risk_per_trade", they go directly into trial_params_override.
+        if param_name_key in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
+            trial_params_override[param_name_key] = suggested_value
+        else: # Assume it's an indicator parameter
+            trial_params_override["indicators"][param_name_key] = suggested_value
+    
+    logger_opt.debug(f"Trial {trial.number}: Constructed trial_params_override: {trial_params_override}")
     
     trial_config_obj = StrategyConfig(params_override=trial_params_override) 
     api_trial = BitgetAPI(**api_config) 
@@ -520,11 +529,11 @@ def optuna_objective_solusdt(trial: optuna.trial.Trial, api_config: Dict, base_c
     
     res = system_trial.backtest_pair(symbol=symbol_to_opt) 
     if 'error' in res and res['error']!='No trades': 
-        logger_opt.warning(f"Trial {trial.number} for {symbol_to_opt} error: {res['error']}. Params: {trial.params}")
+        logger_opt.warning(f"Trial {trial.number} for {symbol_to_opt} error: {res['error']}. Optuna Params: {trial.params}, Constructed Params for trial: {trial_params_override}")
         return -float('inf') 
     
     score = system_trial._calculate_score(res) 
-    logger_opt.info(f"T{trial.number:03d}: Score={score:<7.2f} Trd={res.get('total_trades',0):<3} PnL%={res.get('total_return_pct',0):<7.2f}% Params={trial.params}")
+    logger_opt.info(f"T{trial.number:03d}: Score={score:<7.2f} Trd={res.get('total_trades',0):<3} PnL%={res.get('total_return_pct',0):<7.2f}% Optuna Params={trial.params}")
     return float(score)
 
 
@@ -536,22 +545,26 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
 
     api = BitgetAPI(**api_config_dict) 
     
-    wfa_kline_limit = base_config_for_wfa.get("backtest_kline_limit", 1500) * (wfa_cfg.get("num_oos_periods", 4) + wfa_cfg.get("is_period_days_multiple_of_oos",3))
-    wfa_kline_limit = min(wfa_kline_limit, 3000) 
+    granularity_wfa = base_config_for_wfa.get("granularity","4H")
+    hours_per_candle_wfa = int(''.join(filter(str.isdigit, granularity_wfa))) if granularity_wfa[:-1].isdigit() and len(granularity_wfa)>1 else 4
 
-    logger_wfa.info(f"WFA: Attempting to fetch up to {wfa_kline_limit} candles for {symbol} for full WFA range.")
-    full_hist_df = api.get_klines(symbol, base_config_for_wfa.get("granularity","4H"), limit=wfa_kline_limit) 
+    num_oos = wfa_cfg.get("num_oos_periods",4)
+    oos_days = wfa_cfg.get("oos_period_days",90)
+    is_mult = wfa_cfg.get("is_period_days_multiple_of_oos",3)
+    is_days = oos_days * is_mult
     
-    # Ensure 'granularity' key exists and is valid for calculation, e.g., "4H" -> 4
-    granularity_str = base_config_for_wfa.get("granularity","4H")
-    hours_per_candle = int(''.join(filter(str.isdigit, granularity_str))) if granularity_str[:-1].isdigit() else 4 # Default to 4 if parse fails
+    total_days_for_wfa_approx = is_days + (num_oos * oos_days)
+    candles_per_day = 24 / hours_per_candle_wfa
+    approx_total_candles = int(total_days_for_wfa_approx * candles_per_day) + base_config_for_wfa.get("backtest_min_data_after_indicators",100) # Add buffer
     
-    min_total_candles_needed_for_wfa = base_config_for_wfa.get("backtest_min_data_after_indicators",50) + \
-                                   (wfa_cfg.get("is_period_days_multiple_of_oos",3) * wfa_cfg.get("oos_period_days",90) + wfa_cfg.get("oos_period_days",90)) * (24 / hours_per_candle)
+    logger_wfa.info(f"WFA: Attempting to fetch approx {approx_total_candles} candles for {symbol} for full WFA range.")
+    full_hist_df = api.get_klines(symbol, granularity_wfa, limit=min(approx_total_candles, 2000)) # Cap limit per API call
+    
+    min_total_candles_needed_for_wfa_strict = base_config_for_wfa.get("backtest_min_data_after_indicators",50) + \
+                                   int((is_days + oos_days) * candles_per_day)
 
-
-    if full_hist_df.empty or len(full_hist_df) < min_total_candles_needed_for_wfa :
-        logger_wfa.error(f"Not enough historical data for {symbol} for WFA. Fetched {len(full_hist_df)}, need approx >{min_total_candles_needed_for_wfa}. Check API limits or data source."); return
+    if full_hist_df.empty or len(full_hist_df) < min_total_candles_needed_for_wfa_strict :
+        logger_wfa.error(f"Not enough historical data for {symbol} for WFA. Fetched {len(full_hist_df)}, need approx >{min_total_candles_needed_for_wfa_strict}. Check API limits or data source."); return
     full_hist_df.sort_index(inplace=True)
     logger_wfa.info(f"WFA: {len(full_hist_df)} total candles for {symbol} ({full_hist_df.index.min()} to {full_hist_df.index.max()})")
     
@@ -562,24 +575,25 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
     optuna_keys_in_base_config = base_config_for_wfa.get("optuna_parameter_ranges", {}).keys()
     for k_opt, val_opt in optimized_params_dict_flat.items():
         mapped_key = k_opt
+        # Map flat Optuna keys (used in suggest_*) to nested config structure if needed
         if k_opt == "sl_atr_mult": mapped_key = "stop_loss_atr_multiplier"
         elif k_opt == "tp_atr_mult": mapped_key = "take_profit_atr_multiplier"
+        # Assuming other keys from Optuna (like "tema_period") are meant for the "indicators" dict
         
         if mapped_key in ["stop_loss_atr_multiplier", "take_profit_atr_multiplier", "risk_per_trade"]:
             wfa_params_override_nested[mapped_key] = val_opt
-        elif k_opt in optuna_keys_in_base_config: 
-             wfa_params_override_nested["indicators"][k_opt] = val_opt
-    logger_wfa.debug(f"WFA using reconstructed optimized params for override: {wfa_params_override_nested}")
+        elif k_opt in optuna_keys_in_base_config: # Ensure it's a known optimizable indicator param
+             wfa_params_override_nested["indicators"][k_opt] = val_opt 
+        # else: # Parameter from Optuna not directly mapped for WFA config structure
+             # logger_wfa.debug(f"WFA: Optuna param '{k_opt}' (value: {val_opt}) not explicitly mapped for WFA nested config. Check structure.")
 
-    num_oos = wfa_cfg.get("num_oos_periods",4)
-    oos_days = wfa_cfg.get("oos_period_days",90)
-    is_mult = wfa_cfg.get("is_period_days_multiple_of_oos",3)
-    is_days = oos_days * is_mult
+
+    logger_wfa.debug(f"WFA using reconstructed optimized params for override: {wfa_params_override_nested}")
 
     for i in range(num_oos):
         oos_e_dt, oos_s_dt = oos_end_dt, oos_end_dt - pd.Timedelta(days=oos_days)
-        is_e_dt, is_s_dt = oos_s_dt - pd.Timedelta(hours=hours_per_candle), \
-                           oos_s_dt - pd.Timedelta(hours=hours_per_candle) - pd.Timedelta(days=is_days)
+        is_e_dt, is_s_dt = oos_s_dt - pd.Timedelta(hours=hours_per_candle_wfa), \
+                           oos_s_dt - pd.Timedelta(hours=hours_per_candle_wfa) - pd.Timedelta(days=is_days)
         
         if is_s_dt < full_hist_df.index[0] or oos_s_dt < full_hist_df.index[0]: 
             logger_wfa.warning(f"WFA period {num_oos-i} extends beyond available data start ({full_hist_df.index[0].date()}). Stopping WFA.")
@@ -593,7 +607,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
         min_len_for_oos_slice = base_config_for_wfa.get("backtest_min_data_after_get_klines",100) 
         if oos_data_slice.empty or len(oos_data_slice) < min_len_for_oos_slice:
             logger_wfa.warning(f"WFA OOS {num_oos-i}: Not enough data in slice ({len(oos_data_slice)} vs {min_len_for_oos_slice}). Skipping."); 
-            oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle); continue 
+            oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle_wfa); continue 
         
         oos_res = wfa_system.backtest_pair(symbol,data_df_override=oos_data_slice,date_from=oos_s_dt,date_to=oos_e_dt)
         
@@ -606,7 +620,7 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
                             "is_start_date":is_s_dt, "is_end_date":is_e_dt, 
                             "oos_start_date":oos_s_dt, "oos_end_date":oos_e_dt, 
                             **oos_res})
-        oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle) 
+        oos_end_dt = is_s_dt - pd.Timedelta(hours=hours_per_candle_wfa) 
 
     if all_oos_res:
         df_oos = pd.DataFrame(all_oos_res).sort_values("wfa_period_num"); 
@@ -619,7 +633,11 @@ def run_walk_forward_analysis(symbol: str, optimized_params_dict_flat: Dict, api
 
         df_oos.to_csv(fn_wfa,index=False)
         logger_wfa.info(f"WFA report for {symbol}: {fn_wfa}")
-        logger_wfa.info(f"Agg OOS for {symbol}: Avg PnL%={df_oos['total_return_pct'].mean():.2f}%, Avg Trades={df_oos['total_trades'].mean():.1f}")
+        if not df_oos.empty and 'total_return_pct' in df_oos.columns and 'total_trades' in df_oos.columns:
+            logger_wfa.info(f"Agg OOS for {symbol}: Avg PnL%={df_oos['total_return_pct'].mean():.2f}%, Avg Trades={df_oos['total_trades'].mean():.1f}")
+        else:
+            logger_wfa.warning(f"Could not calculate aggregate OOS stats for {symbol} due to missing columns or empty results.")
+
 
 # --- Main Execution ---
 if __name__ == "__main__":
@@ -632,21 +650,9 @@ if __name__ == "__main__":
     try:
         log_f_path = Path("logs")/f"solusdt_bot_run_{ts_run}.log"
         h_file_log=logging.FileHandler(log_f_path); h_file_log.setLevel(logging.INFO)
-        # Use a more detailed formatter for the file log if needed, especially for multiprocessing
-        file_formatter = logging.Formatter('%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s')
-        h_file_log.setFormatter(file_formatter)
+        h_file_log.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         logging.getLogger().addHandler(h_file_log) 
         
-        # Configure console handler for main process
-        # This ensures main process logs are distinguishable or simpler
-        # This might conflict if basicConfig already set a StreamHandler, so be careful or clear existing.
-        # For simplicity, assume basicConfig's StreamHandler is the one to modify if needed.
-        for h_console_main in logging.getLogger().handlers: # Modify existing console handlers
-            if isinstance(h_console_main, logging.StreamHandler) and not isinstance(h_console_main, logging.FileHandler):
-                h_console_main.setLevel(logging.INFO) # Set console to INFO for less verbosity
-                h_console_main.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')) # Simpler format for console
-        
-        # Re-initialize global config instance AFTER logger is fully set up for its own init messages
         strategy_config_global = StrategyConfig() 
         logger.info(f"SOLUSDT NNFX Bot Run ID: {ts_run}")
         logger.info(f"Using Base Strategy Config: {strategy_config_global.config_path}")
@@ -706,7 +712,7 @@ if __name__ == "__main__":
                     logger.error(f"Error saving BACKTEST_ONLY result to JSON: {e_json_save}")
 
         if ACTION in ["WALK_FORWARD", "BOTH"]:
-            params_for_wfa = None # This should be a flat dict as returned by Optuna study.best_params
+            params_for_wfa = None 
             if best_params_from_optuna_run:
                 logger.info("Using parameters from the current Optuna run for WFA.")
                 params_for_wfa = best_params_from_optuna_run 
@@ -719,7 +725,7 @@ if __name__ == "__main__":
                 else:
                     logger.warning("No optimized params from current Optuna run or saved files. WFA will use base config from solusdt_strategy_base.json.")
                     temp_base_cfg_for_wfa = StrategyConfig() 
-                    params_for_wfa = {} # Construct a flat dict
+                    params_for_wfa = {} 
                     opt_ranges_from_base = temp_base_cfg_for_wfa.get("optuna_parameter_ranges", {})
                     for k_wfa_opt in opt_ranges_from_base.keys():
                         param_path_in_config = f"indicators.{k_wfa_opt}" 
@@ -727,11 +733,10 @@ if __name__ == "__main__":
                         elif k_wfa_opt == "tp_atr_mult": param_path_in_config = "take_profit_atr_multiplier"
                         elif k_wfa_opt == "risk_per_trade": param_path_in_config = "risk_per_trade"
                         
-                        params_for_wfa[k_wfa_opt] = temp_base_cfg_for_wfa.get(param_path_in_config, default_config_for_fallback.get(param_path_in_config)) # Use default_config as absolute fallback
+                        params_for_wfa[k_wfa_opt] = temp_base_cfg_for_wfa.get(param_path_in_config, default_config_for_fallback.get(param_path_in_config)) 
                     logger.info(f"Constructed WFA params from base config: {params_for_wfa}")
 
             if params_for_wfa: 
-                 # Pass the global strategy_config_global which loads solusdt_strategy_base.json for WFA structure
                  run_walk_forward_analysis(SYMBOL, params_for_wfa, api_cfg, strategy_config_global)
             else:
                  logger.error("Cannot run WFA: No parameters available (neither from current opt nor loaded).")

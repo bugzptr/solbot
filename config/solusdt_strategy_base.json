@@ -1,0 +1,57 @@
+{
+    "symbol": "SOLUSDT",
+    "indicators": {
+        "system_a": {
+            "baseline": "TEMA",
+            "confirmation": "CCI",
+            "volume": "EFI"
+        },
+        "system_b": {
+            "baseline": "Kijun-Sen",
+            "confirmation": "Williams %R",
+            "volume": "CMF"
+        }
+    },
+    "optuna_parameter_ranges": {
+        "tema_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        },
+        "cci_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        },
+        "efi_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        },
+        "kijun_sen_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        },
+        "williams_r_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        },
+        "cmf_length": {
+            "min": 10,
+            "max": 50,
+            "step": 5
+        }
+    },
+    "walk_forward": {
+        "enabled": false,
+        "initial_train_period": "6 months",
+        "test_period": "1 month",
+        "refit_frequency": "1 month"
+    },
+    "scoring_weights": {
+        "sharpe_ratio": 0.5,
+        "sortino_ratio": 0.5
+    }
+}
